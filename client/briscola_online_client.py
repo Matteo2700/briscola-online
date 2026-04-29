@@ -158,6 +158,8 @@ class OnlineBriscolaClient:
             messagebox.showerror("Online", f"Errore invio dati:\n{e}")
 
     def receiver_thread(self):
+        close_reason = "Connessione chiusa."
+
         try:
             while True:
                 raw = self.ws.recv()
@@ -171,10 +173,11 @@ class OnlineBriscolaClient:
                     continue
 
                 self.root.after(0, lambda m=msg: self.handle_message(m))
-        except Exception:
-            pass
 
-        self.root.after(0, lambda: self.set_status("Connessione chiusa."))
+        except Exception as exc:
+            close_reason = f"Connessione chiusa: {exc}"
+
+        self.root.after(0, lambda r=close_reason: self.set_status(r))
 
     def connect(self, server_url):
         if self.ws:

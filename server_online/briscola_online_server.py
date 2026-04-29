@@ -74,11 +74,17 @@ class Client:
     seat: str | None = None
     alive: bool = True
 
-    async def send(self, obj: dict[str, Any]) -> None:
+    async def send(self, obj: dict[str, Any]) -> bool:
+        if not self.alive:
+            return False
+
         try:
             await self.websocket.send_text(json.dumps(obj, ensure_ascii=False))
-        except Exception:
+            return True
+        except Exception as exc:
+            print(f"[send-error] {exc}")
             self.alive = False
+            return False
 
 
 @dataclass
@@ -255,7 +261,6 @@ class Room:
 class BriscolaServer:
     def __init__(self) -> None:
         self.rooms: dict[str, Room] = {}
-        self.clients: set[Client] = set()
         self.lock = asyncio.Lock()
 
     def new_room_code(self) -> str:
@@ -270,8 +275,19 @@ class BriscolaServer:
 
     async def broadcast(self, room: Room) -> None:
         for seat, client in list(room.players.items()):
-            if client.alive:
-                await client.send(room.public_state_for(seat))
+            if not client.alive:
+                continue
+
+            try:
+                state = room.public_state_for(seat)
+                ok = await client.send(state)
+
+                if not ok:
+                    print(f"[broadcast] invio fallito a {seat} nella stanza {room.code}")
+
+            except Exception as exc:
+                print(f"[broadcast-error] seat={seat} room={room.code}: {exc}")
+                client.alive = False
 
     async def handle_create(self, client: Client, msg: dict[str, Any]) -> None:
         name = (msg.get("name") or "Giocatore 1").strip() or "Giocatore 1"
@@ -286,6 +302,7 @@ class BriscolaServer:
             client.seat = "p1"
             room.players["p1"] = client
 
+        print(f"[create] stanza {code} creata da {name}")
         await self.broadcast(room)
 
     async def handle_join(self, client: Client, msg: dict[str, Any]) -> None:
@@ -300,8 +317,12 @@ class BriscolaServer:
                 return
 
             async with room.lock:
-                if "p2" in room.players:
+                if "p2" in room.players and room.players["p2"].alive:
                     await self.send_error(client, "Stanza già piena.")
+                    return
+
+                if "p1" not in room.players or not room.players["p1"].alive:
+                    await self.send_error(client, "Il creatore della stanza non è più connesso.")
                     return
 
                 client.name = name
@@ -310,6 +331,7 @@ class BriscolaServer:
                 room.players["p2"] = client
                 room.start()
 
+        print(f"[join] {name} entrato nella stanza {code}")
         await self.broadcast(room)
 
     async def handle_play(self, client: Client, msg: dict[str, Any]) -> None:
@@ -344,11 +366,16 @@ class BriscolaServer:
             return
 
         async with room.lock:
-            other_seat = "p2" if client.seat == "p1" else "p1"
+            if client.seat in room.players and room.players[client.seat] is client:
+                room.players.pop(client.seat, None)
 
-            if other_seat in room.players:
+            if room.players:
                 room.status = "L'avversario si è disconnesso."
                 room.game_over = True
+            else:
+                self.rooms.pop(room.code, None)
+                print(f"[cleanup] stanza {room.code} rimossa")
+                return
 
         await self.broadcast(room)
 
@@ -389,17 +416,19 @@ async def health() -> dict[str, str]:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     client = Client(websocket=websocket)
-    server.clients.add(client)
+    print("[ws] client connesso")
 
     try:
         while True:
             msg = await websocket.receive_json()
+            print(f"[msg] {msg}")
             await server.handle_message(client, msg)
 
     except WebSocketDisconnect:
-        pass
+        print("[ws] client disconnesso")
 
     except Exception as exc:
+        print(f"[ws-error] {exc}")
         try:
             await client.send({"type": "error", "message": f"Errore server: {exc}"})
         except Exception:
@@ -407,7 +436,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     finally:
         await server.handle_disconnect(client)
-        server.clients.discard(client)
 
 
 if __name__ == "__main__":
