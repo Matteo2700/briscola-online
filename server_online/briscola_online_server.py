@@ -105,6 +105,8 @@ class Room:
     resolving: bool = False
     game_over: bool = False
     status: str = "In attesa dell'altro giocatore..."
+    animations_enabled: bool = True
+    animation_speed: str = "Normale"
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def other(self, seat: str) -> str:
@@ -257,6 +259,9 @@ class Room:
             "status": self.status,
             "game_over": self.game_over,
             "disconnect": "disconnesso" in (self.status or "").lower(),
+            "is_host": seat == "p1",
+            "animations_enabled": self.animations_enabled,
+            "animation_speed": self.animation_speed,
         }
 
 
@@ -421,6 +426,31 @@ class BriscolaServer:
 
         await self.broadcast(room)
 
+    async def handle_settings(self, client: Client, msg: dict[str, Any]) -> None:
+        room = self.rooms.get(client.room_code or "")
+
+        if not room:
+            await self.send_error(client, "Partita non trovata.")
+            return
+
+        if client.seat != "p1":
+            await self.send_error(client, "Solo chi ha creato la stanza può modificare le animazioni.")
+            await self.broadcast(room)
+            return
+
+        enabled = bool(msg.get("animations_enabled", True))
+        speed = str(msg.get("animation_speed") or "Normale")
+
+        if speed not in ["Lenta", "Normale", "Veloce"]:
+            speed = "Normale"
+
+        async with room.lock:
+            room.animations_enabled = enabled
+            room.animation_speed = speed
+            room.status = f"Animazioni: {'ON' if enabled else 'OFF'} - {speed}."
+
+        await self.broadcast(room)
+
     async def handle_message(self, client: Client, msg: dict[str, Any]) -> None:
         typ = msg.get("type")
 
@@ -430,6 +460,8 @@ class BriscolaServer:
             await self.handle_join(client, msg)
         elif typ == "play":
             await self.handle_play(client, msg)
+        elif typ == "settings":
+            await self.handle_settings(client, msg)
         elif typ == "ping":
             await client.send({"type": "pong"})
         else:

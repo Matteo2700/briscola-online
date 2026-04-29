@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 import random
+import sys
+import subprocess
 import json
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +55,7 @@ BLACKISH = "#03170d"
 STATS_FILE = "briscola_stats.json"
 SETTINGS_FILE = "briscola_settings.json"
 ICON_FILES = ["icona.ico", "icon.ico", "icona.png", "icon.png"]
+PROFILE_FILE = "briscola_profile.json"
 
 try:
     RESAMPLE = Image.Resampling.LANCZOS
@@ -936,6 +939,38 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
     # MENU
     # ========================================================
 
+    def return_to_main_menu(self):
+        launcher = Path(__file__).with_name("briscola_launcher.py")
+
+        if launcher.exists():
+            try:
+                subprocess.Popen([sys.executable, str(launcher)])
+            except Exception as exc:
+                messagebox.showerror("Menu principale", f"Non riesco ad aprire il menu principale:\n{exc}")
+                return
+
+        self.root.destroy()
+
+    def show_user_profile(self):
+        try:
+            profile = json.loads(Path(PROFILE_FILE).read_text(encoding="utf-8")) if Path(PROFILE_FILE).exists() else {}
+        except Exception:
+            profile = {}
+
+        username = profile.get("username", "")
+        online = profile.get("online", {})
+
+        text = f"PROFILO UTENTE\n\nNome utente fisso: {username or '(non impostato)'}\n\n"
+        text += "CONTRO BOT\nLe statistiche dettagliate sono in Statistiche → Mostra statistiche.\n\n"
+        text += "ONLINE\n"
+        text += f"Partite: {online.get('partite', 0)}\n"
+        text += f"Vittorie: {online.get('vittorie', 0)}\n"
+        text += f"Sconfitte: {online.get('sconfitte', 0)}\n"
+        text += f"Pareggi: {online.get('pareggi', 0)}\n"
+        text += f"Winstreak online: {online.get('winstreak_attuale', 0)}\n"
+
+        messagebox.showinfo("Profilo utente", text)
+
     def setup_menu(self):
         self.menu_bar = tk.Menu(self.root)
         self.root.config(menu=self.menu_bar)
@@ -997,6 +1032,10 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.menu_statistiche = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Statistiche", menu=self.menu_statistiche)
         self.menu_statistiche.add_command(label="Mostra statistiche", command=self.show_stats)
+
+        self.menu_profilo = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Profilo", menu=self.menu_profilo)
+        self.menu_profilo.add_command(label="Apri profilo utente", command=self.show_user_profile)
 
         self.menu_aiuto = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Aiuto", menu=self.menu_aiuto)

@@ -1,5 +1,8 @@
 
 import json
+import sys
+import subprocess
+from datetime import datetime
 import re
 import threading
 import websocket
@@ -25,6 +28,8 @@ WHITE = "#ffffff"
 MUTED = "#bfe8c5"
 BLACKISH = "#03170d"
 ICON_FILES = ["icona.ico", "icon.ico", "icona.png", "icon.png"]
+PROFILE_FILE = "briscola_profile.json"
+BOT_STATS_FILE = "briscola_stats.json"
 
 try:
     RESAMPLE = Image.Resampling.LANCZOS
@@ -58,6 +63,9 @@ class OnlineBriscolaClient:
 
         self.app_icon = None
         self.load_window_icon()
+
+        self.profile = self.load_profile()
+        self.online_stats_recorded = False
 
         self.ws = None
         self.connected = False
@@ -94,6 +102,10 @@ class OnlineBriscolaClient:
         self.animating = False
         self.pending_state = None
         self.suppress_next_own_animation_id = None
+        self.is_host = False
+        self.updating_animation_settings = False
+        self.animations_enabled = tk.BooleanVar(value=True)
+        self.animation_speed = tk.StringVar(value="Normale")
 
         self.canvas = tk.Canvas(root, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
@@ -119,14 +131,257 @@ class OnlineBriscolaClient:
             except Exception:
                 pass
 
+    # ========================================================
+    # PROFILO / STATISTICHE / MENU
+    # ========================================================
+
+    def get_default_profile(self):
+        return {
+            "username": "",
+            "online": {
+                "partite": 0,
+                "vittorie": 0,
+                "sconfitte": 0,
+                "pareggi": 0,
+                "winstreak_attuale": 0,
+                "winstreak_migliore": 0,
+                "punti_totali_tu": 0,
+                "punti_totali_avversario": 0,
+                "ultima_partita": None
+            }
+        }
+
+    def load_profile(self):
+        default = self.get_default_profile()
+        path = Path(PROFILE_FILE)
+
+        if not path.exists():
+            return default
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
+
+        data.setdefault("username", "")
+        data.setdefault("online", default["online"])
+
+        for key, value in default["online"].items():
+            data["online"].setdefault(key, value)
+
+        return data
+
+    def save_profile(self):
+        try:
+            Path(PROFILE_FILE).write_text(
+                json.dumps(self.profile, indent=2, ensure_ascii=False),
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    def save_username(self, username):
+        username = (username or "").strip()
+
+        if username:
+            self.profile["username"] = username
+            self.save_profile()
+
+    def record_online_stats(self):
+        if self.online_stats_recorded:
+            return
+
+        self.online_stats_recorded = True
+        s = self.profile.setdefault("online", self.get_default_profile()["online"])
+
+        s["partite"] += 1
+        s["punti_totali_tu"] += self.punti_p
+        s["punti_totali_avversario"] += self.punti_b
+
+        if self.punti_p > self.punti_b:
+            result = "vittoria"
+            s["vittorie"] += 1
+            s["winstreak_attuale"] += 1
+            s["winstreak_migliore"] = max(s["winstreak_migliore"], s["winstreak_attuale"])
+        elif self.punti_p < self.punti_b:
+            result = "sconfitta"
+            s["sconfitte"] += 1
+            s["winstreak_attuale"] = 0
+        else:
+            result = "pareggio"
+            s["pareggi"] += 1
+            s["winstreak_attuale"] = 0
+
+        s["ultima_partita"] = {
+            "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "risultato": result,
+            "tu": self.your_name,
+            "avversario": self.opponent_name,
+            "punti_tu": self.punti_p,
+            "punti_avversario": self.punti_b,
+            "stanza": self.room_code
+        }
+
+        self.save_profile()
+
+    def read_bot_stats_summary(self):
+        path = Path(BOT_STATS_FILE)
+
+        if not path.exists():
+            return "Nessuna partita contro il bot registrata."
+
+        try:
+            s = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return "Statistiche bot non leggibili."
+
+        partite = int(s.get("partite", 0) or 0)
+
+        if partite <= 0:
+            return "Nessuna partita contro il bot registrata."
+
+        vittorie = int(s.get("vittorie", 0) or 0)
+        sconfitte = int(s.get("sconfitte", 0) or 0)
+        pareggi = int(s.get("pareggi", 0) or 0)
+        winrate = vittorie / partite * 100
+
+        return (
+            f"Partite: {partite}\n"
+            f"Vittorie: {vittorie}\n"
+            f"Sconfitte: {sconfitte}\n"
+            f"Pareggi: {pareggi}\n"
+            f"Winrate: {winrate:.1f}%\n"
+            f"Winstreak attuale: {s.get('winstreak_attuale', 0)}\n"
+            f"Migliore winstreak: {s.get('winstreak_migliore', 0)}"
+        )
+
+    def format_profile_text(self):
+        username = self.profile.get("username", "")
+        online = self.profile.get("online", self.get_default_profile()["online"])
+        partite_online = int(online.get("partite", 0) or 0)
+        online_winrate = (online.get("vittorie", 0) / partite_online * 100) if partite_online else 0
+
+        righe = [
+            "PROFILO UTENTE",
+            "",
+            f"Nome utente fisso: {username or '(non impostato)'}",
+            "",
+            "PARTITE CONTRO IL BOT",
+            self.read_bot_stats_summary(),
+            "",
+            "PARTITE ONLINE",
+            f"Partite: {partite_online}",
+            f"Vittorie: {online.get('vittorie', 0)}",
+            f"Sconfitte: {online.get('sconfitte', 0)}",
+            f"Pareggi: {online.get('pareggi', 0)}",
+            f"Winrate online: {online_winrate:.1f}%",
+            f"Winstreak online attuale: {online.get('winstreak_attuale', 0)}",
+            f"Migliore winstreak online: {online.get('winstreak_migliore', 0)}",
+        ]
+
+        ultima = online.get("ultima_partita")
+
+        if ultima:
+            righe.extend([
+                "",
+                "ULTIMA PARTITA ONLINE",
+                f"Data: {ultima.get('data', '')}",
+                f"Risultato: {ultima.get('risultato', '')}",
+                f"Avversario: {ultima.get('avversario', '')}",
+                f"Punti: {ultima.get('punti_tu', 0)} - {ultima.get('punti_avversario', 0)}"
+            ])
+
+        return "\n".join(righe)
+
+    def show_profile(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Profilo utente")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
+        if self.app_icon:
+            try:
+                dialog.iconphoto(True, self.app_icon)
+            except Exception:
+                pass
+
+        frame = ttk.Frame(dialog, padding=(14, 14, 14, 14))
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Nome utente fisso").grid(row=0, column=0, sticky="w")
+        username_var = tk.StringVar(value=self.profile.get("username", ""))
+        entry = ttk.Entry(frame, textvariable=username_var, width=32)
+        entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        text = tk.Text(frame, width=56, height=26, wrap="word", font=("Consolas", 10))
+        text.grid(row=1, column=0, columnspan=2, pady=(12, 0), sticky="nsew")
+
+        def refresh_text():
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.insert("1.0", self.format_profile_text())
+            text.configure(state="disabled")
+
+        refresh_text()
+
+        btns = ttk.Frame(frame)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def save_and_refresh():
+            self.save_username(username_var.get())
+            refresh_text()
+            messagebox.showinfo("Profilo", "Nome utente salvato.")
+
+        ttk.Button(btns, text="Salva nome", command=save_and_refresh).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Chiudi", command=dialog.destroy).pack(side="right")
+
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_reqwidth() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_reqheight() // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+    def return_to_main_menu(self):
+        launcher = Path(__file__).with_name("briscola_launcher.py")
+
+        if launcher.exists():
+            try:
+                subprocess.Popen([sys.executable, str(launcher)])
+            except Exception as exc:
+                messagebox.showerror("Menu principale", f"Non riesco ad aprire il menu principale:\n{exc}")
+                return
+
+        self.root.destroy()
+
     def setup_menu(self):
         mb = tk.Menu(self.root)
         self.root.config(menu=mb)
+
         m = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Online", menu=m)
         m.add_command(label="Connetti / cambia stanza", command=self.show_connect_dialog)
         m.add_separator()
+        m.add_command(label="Torna al menu principale", command=self.return_to_main_menu)
         m.add_command(label="Esci", command=self.root.destroy)
+
+        self.menu_animazioni = tk.Menu(mb, tearoff=0)
+        mb.add_cascade(label="Animazioni", menu=self.menu_animazioni)
+        self.menu_animazioni.add_checkbutton(
+            label="Animazioni ON/OFF",
+            variable=self.animations_enabled,
+            command=self.send_animation_settings
+        )
+        self.menu_animazioni.add_separator()
+        for speed in ["Lenta", "Normale", "Veloce"]:
+            self.menu_animazioni.add_radiobutton(
+                label=speed,
+                variable=self.animation_speed,
+                value=speed,
+                command=self.send_animation_settings
+            )
+
+        prof = tk.Menu(mb, tearoff=0)
+        mb.add_cascade(label="Profilo", menu=prof)
+        prof.add_command(label="Apri profilo utente", command=self.show_profile)
 
     def normalize_server_url(self, raw):
         url = (raw or "").strip()
@@ -199,7 +454,28 @@ class OnlineBriscolaClient:
 
         self.connected = True
         self.game_over_shown = False
+        self.online_stats_recorded = False
         threading.Thread(target=self.receiver_thread, daemon=True).start()
+
+    def send_animation_settings(self):
+        if self.updating_animation_settings:
+            return
+
+        if not self.connected or not self.room_code:
+            return
+
+        if not self.is_host:
+            messagebox.showwarning(
+                "Animazioni",
+                "Solo chi ha creato la stanza può modificare le animazioni online."
+            )
+            return
+
+        self.send({
+            "type": "settings",
+            "animations_enabled": bool(self.animations_enabled.get()),
+            "animation_speed": self.animation_speed.get()
+        })
 
     def show_connect_dialog(self):
         dialog = tk.Toplevel(self.root)
@@ -217,7 +493,7 @@ class OnlineBriscolaClient:
         main.pack(fill="both", expand=True)
 
         mode = tk.StringVar(value="create")
-        name_var = tk.StringVar(value="")
+        name_var = tk.StringVar(value=self.profile.get("username", ""))
         server_var = tk.StringVar(value="wss://briscola-online-wh5m.onrender.com/ws")
         room_var = tk.StringVar(value="")
 
@@ -259,6 +535,7 @@ class OnlineBriscolaClient:
                 return
 
             try:
+                self.save_username(nome)
                 self.connect(server_var.get().strip())
 
                 room_code = room_var.get().strip()
@@ -324,6 +601,12 @@ class OnlineBriscolaClient:
         self.turn_player = bool(st.get("turn_is_you", False))
         self.lock = not self.turn_player
         self.status = self.translate_server_status(st.get("status", ""))
+        self.is_host = bool(st.get("is_host", False))
+
+        self.updating_animation_settings = True
+        self.animations_enabled.set(bool(st.get("animations_enabled", True)))
+        self.animation_speed.set(st.get("animation_speed", "Normale"))
+        self.updating_animation_settings = False
 
         # Se il server ha confermato la carta giocata localmente,
         # non serve più sopprimere l'animazione.
@@ -340,6 +623,7 @@ class OnlineBriscolaClient:
                 return
 
             self.game_over_shown = True
+            self.record_online_stats()
 
             if self.punti_p > self.punti_b:
                 res = "Hai vinto!"
@@ -544,7 +828,8 @@ class OnlineBriscolaClient:
             dst = self.pos.get("opponent_draw_target", (500, 82))
 
         def next_one():
-            self.animate_draw_sequence(draw_jobs[1:], callback)
+            # Micro-pausa fra una pesca e l'altra: più naturale e meno frenetico.
+            self.root.after(90, lambda: self.animate_draw_sequence(draw_jobs[1:], callback))
 
         self.animate_card_move(img, src, dst, next_one)
 
@@ -559,46 +844,104 @@ class OnlineBriscolaClient:
             self.root.after(50, lambda: self.apply_state(next_state))
 
     def get_animation_steps(self):
-        return 14
+        speed = self.animation_speed.get()
+
+        if speed == "Lenta":
+            return 34
+        if speed == "Veloce":
+            return 16
+
+        return 24
+
+    def get_animation_delay(self):
+        speed = self.animation_speed.get()
+
+        if speed == "Lenta":
+            return 14
+        if speed == "Veloce":
+            return 9
+
+        return 12
+
+    def ease_animation(self, t):
+        # Smoothstep: parte e arriva più dolcemente rispetto al movimento lineare.
+        return t * t * (3 - 2 * t)
 
     def animate_card_move(self, img, src, dst, callback):
+        if not self.animations_enabled.get():
+            self.root.after(120, callback)
+            return
+
         sx, sy = src
         dx, dy = dst
         steps = self.get_animation_steps()
+        delay = self.get_animation_delay()
 
         anim_id = self.canvas.create_image(sx, sy, image=img, anchor="nw", tags="anim")
+        self.canvas.tag_raise("anim")
 
         def step(i):
             if i >= steps:
+                self.canvas.coords(anim_id, dx, dy)
                 self.canvas.delete(anim_id)
                 callback()
                 return
 
-            self.canvas.move(anim_id, (dx - sx) / steps, (dy - sy) / steps)
-            self.root.after(18, lambda: step(i + 1))
+            t = self.ease_animation(i / steps)
+            x = sx + (dx - sx) * t
+            y = sy + (dy - sy) * t
+
+            # Uso coords assolute invece di move incrementale:
+            # meno accumulo di micro-errori e movimento più regolare.
+            self.canvas.coords(anim_id, x, y)
+            self.root.after(delay, lambda: step(i + 1))
 
         step(0)
 
     def animate_two_cards_to_target(self, img1, src1, img2, src2, dst, callback):
+        if not self.animations_enabled.get():
+            self.root.after(250, callback)
+            return
+
         sx1, sy1 = src1
         sx2, sy2 = src2
         dx, dy = dst
         steps = self.get_animation_steps()
+        delay = self.get_animation_delay()
+
+        # Piccolo offset, così le due carte non si sovrappongono perfettamente
+        # durante la raccolta.
+        dx1, dy1 = dx - 10, dy
+        dx2, dy2 = dx + 10, dy + 6
 
         a1 = self.canvas.create_image(sx1, sy1, image=img1, anchor="nw", tags="anim")
         a2 = self.canvas.create_image(sx2, sy2, image=img2, anchor="nw", tags="anim")
+        self.canvas.tag_raise("anim")
 
         def step(i):
             if i >= steps:
+                self.canvas.coords(a1, dx1, dy1)
+                self.canvas.coords(a2, dx2, dy2)
                 self.canvas.delete(a1)
                 self.canvas.delete(a2)
                 callback()
                 return
 
-            self.canvas.move(a1, (dx - sx1) / steps, (dy - sy1) / steps)
-            self.canvas.move(a2, (dx - sx2) / steps, (dy - sy2) / steps)
+            t = self.ease_animation(i / steps)
 
-            self.root.after(18, lambda: step(i + 1))
+            self.canvas.coords(
+                a1,
+                sx1 + (dx1 - sx1) * t,
+                sy1 + (dy1 - sy1) * t
+            )
+
+            self.canvas.coords(
+                a2,
+                sx2 + (dx2 - sx2) * t,
+                sy2 + (dy2 - sy2) * t
+            )
+
+            self.root.after(delay, lambda: step(i + 1))
 
         step(0)
 
@@ -824,11 +1167,12 @@ class OnlineBriscolaClient:
         self.lock = True
         self.suppress_next_own_animation_id = card.id
 
-        def after_local_animation():
-            # Aggiornamento locale immediato: così la carta non sembra teletrasportata.
-            if card in self.player:
-                self.player.remove(card)
+        # Comportamento identico alla versione contro bot:
+        # la carta sparisce subito dalla mano, poi vola verso lo slot centrale.
+        self.player.pop(idx)
+        self.render()
 
+        def after_local_animation():
             self.c_p = card
             self.render()
             self.send({"type": "play", "card_id": card.id})
@@ -844,6 +1188,7 @@ class OnlineBriscolaClient:
             self.animate_card_move(card.img, src, dst, finish_local)
         else:
             after_local_animation()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
