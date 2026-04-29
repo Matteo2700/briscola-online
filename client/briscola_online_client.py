@@ -294,51 +294,11 @@ class OnlineBriscolaClient:
         return "\n".join(righe)
 
     def show_profile(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Profilo utente")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-
-        if self.app_icon:
-            try:
-                dialog.iconphoto(True, self.app_icon)
-            except Exception:
-                pass
-
-        frame = ttk.Frame(dialog, padding=(14, 14, 14, 14))
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Nome utente fisso").grid(row=0, column=0, sticky="w")
-        username_var = tk.StringVar(value=self.profile.get("username", ""))
-        entry = ttk.Entry(frame, textvariable=username_var, width=32)
-        entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-
-        text = tk.Text(frame, width=56, height=26, wrap="word", font=("Consolas", 10))
-        text.grid(row=1, column=0, columnspan=2, pady=(12, 0), sticky="nsew")
-
-        def refresh_text():
-            text.configure(state="normal")
-            text.delete("1.0", "end")
-            text.insert("1.0", self.format_profile_text())
-            text.configure(state="disabled")
-
-        refresh_text()
-
-        btns = ttk.Frame(frame)
-        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-
-        def save_and_refresh():
-            self.save_username(username_var.get())
-            refresh_text()
-            messagebox.showinfo("Profilo", "Nome utente salvato.")
-
-        ttk.Button(btns, text="Salva nome", command=save_and_refresh).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Chiudi", command=dialog.destroy).pack(side="right")
-
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_reqwidth() // 2)
-        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_reqheight() // 2)
-        dialog.geometry(f"+{x}+{y}")
+        try:
+            from briscola_launcher import show_profile
+            show_profile(self.root)
+        except Exception as exc:
+            messagebox.showerror("Profilo", f"Non riesco ad aprire il profilo completo:\n{exc}")
 
     def return_to_main_menu(self):
         launcher = Path(__file__).with_name("briscola_launcher.py")
@@ -361,7 +321,7 @@ class OnlineBriscolaClient:
         m.add_command(label="Connetti / cambia stanza", command=self.show_connect_dialog)
         m.add_separator()
         m.add_command(label="Torna al menu principale", command=self.return_to_main_menu)
-        m.add_command(label="Esci", command=self.root.destroy)
+        m.add_command(label="Esci", command=self.return_to_main_menu)
 
         self.menu_animazioni = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Animazioni", menu=self.menu_animazioni)
@@ -552,8 +512,17 @@ class OnlineBriscolaClient:
             except Exception as e:
                 messagebox.showerror("Online", f"Connessione fallita:\n{e}")
 
+        def cancel_or_back():
+            dialog.destroy()
+
+            if not self.room_code:
+                self.return_to_main_menu()
+
         ttk.Button(buttons, text="Connetti", command=go).pack(side="right", padx=(8,0))
-        ttk.Button(buttons, text="Annulla", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Indietro", command=cancel_or_back).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", cancel_or_back)
+        dialog.bind("<Escape>", lambda event: cancel_or_back())
+
         name_entry.focus_set()
 
         dialog.update_idletasks()

@@ -155,9 +155,14 @@ class Mazzo:
 # ============================================================
 
 class BriscolaGame:
-    def __init__(self, root):
+    def __init__(self, root, initial_difficulty=None, tutorial_mode=False, tutorial_show_bot_cards=False):
         self.root = root
-        self.root.title("Briscola")
+
+        # Questi flag devono esistere PRIMA di usarli nel titolo della finestra.
+        self.interactive_tutorial = bool(tutorial_mode)
+        self.tutorial_show_bot_cards = bool(tutorial_show_bot_cards)
+
+        self.root.title("Briscola - Tutorial interattivo" if self.interactive_tutorial else "Briscola")
         self.root.geometry("1300x720")
         self.root.configure(bg=BG)
 
@@ -173,7 +178,8 @@ class BriscolaGame:
 
         self.settings = self.load_settings()
 
-        self.livello = tk.StringVar(value=self.settings.get("difficolta", "Medio"))
+        difficulty = initial_difficulty or self.settings.get("difficolta", "Medio")
+        self.livello = tk.StringVar(value=difficulty)
         self.livello_attivo = self.livello.get()
 
         self.debug_bot = tk.BooleanVar(value=bool(self.settings.get("debug_bot", False)))
@@ -181,6 +187,12 @@ class BriscolaGame:
         self.animazioni_enabled = tk.BooleanVar(value=bool(self.settings.get("animazioni_enabled", True)))
         self.training_mode = tk.BooleanVar(value=bool(self.settings.get("training_mode", False)))
         self.velocita_animazioni = tk.StringVar(value=self.settings.get("velocita_animazioni", "Normale"))
+
+        if self.interactive_tutorial:
+            self.training_mode.set(True)
+            self.debug_bot.set(self.tutorial_show_bot_cards)
+            self.livello.set(initial_difficulty or "Facile")
+            self.livello_attivo = self.livello.get()
 
         self.lock = False
         self.stats_recorded_for_current_game = False
@@ -225,7 +237,10 @@ class BriscolaGame:
 
         self.canvas.bind("<Configure>", lambda e: self.render())
 
-        self.scelta_difficolta_iniziale()
+        if initial_difficulty is None and not self.interactive_tutorial:
+            self.scelta_difficolta_iniziale()
+        elif not self.interactive_tutorial:
+            self.save_settings()
 
         if self.app_should_close:
             return
@@ -332,6 +347,10 @@ class BriscolaGame:
         """
         result_key: 'vittoria', 'sconfitta' oppure 'pareggio'
         """
+
+        if getattr(self, "interactive_tutorial", False):
+            self.trofei_sbloccati_ultima_partita = []
+            return
 
         if self.stats_recorded_for_current_game:
             return
@@ -862,11 +881,113 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
         return "Non prendo: scarico la carta meno dannosa."
 
+    def get_tutorial_recommendation(self):
+        if not getattr(self, "interactive_tutorial", False):
+            return None, ""
+
+        if not getattr(self, "turn_player", False) or getattr(self, "lock", False):
+            return None, "Aspetta: ora non tocca a te."
+
+        if not getattr(self, "player", None):
+            return None, ""
+
+        mano = list(self.player)
+        briscola = self.seme_briscola
+
+        def lowest(cards):
+            return min(cards, key=lambda c: (c.punti, c.seme == briscola, c.forza)) if cards else None
+
+        # Tu apri la mano.
+        if self.c_b is None:
+            lisce_nb = [c for c in mano if c.seme != briscola and c.punti == 0]
+            figure_nb = [c for c in mano if c.seme != briscola and 0 < c.punti < 10]
+            non_briscole = [c for c in mano if c.seme != briscola]
+            briscole_basse = [c for c in mano if c.seme == briscola and c.punti == 0]
+
+            if lisce_nb:
+                card = lowest(lisce_nb)
+                reason = "Apri con una liscia non briscola: rischi poco e non regali punti."
+            elif figure_nb:
+                card = lowest(figure_nb)
+                reason = "Apri con una figura non briscola: vale pochi punti e conserva le briscole."
+            elif non_briscole:
+                card = lowest(non_briscole)
+                reason = "Hai poche alternative: meglio aprire con la non briscola meno preziosa."
+            elif briscole_basse:
+                card = lowest(briscole_basse)
+                reason = "Hai solo briscole o quasi: usa la briscola più bassa."
+            else:
+                card = lowest(mano)
+                reason = "Scegli la carta meno costosa tra quelle disponibili."
+
+            return self.player.index(card), reason
+
+        # Il bot ha aperto: devi rispondere.
+        bot_card = self.c_b
+        vincenti = [c for c in mano if self.get_winner_logic(c, bot_card) == "player"]
+        vincenti_nb = [c for c in vincenti if c.seme != briscola]
+        vincenti_b = [c for c in vincenti if c.seme == briscola]
+        lisce = [c for c in mano if c.punti == 0]
+        lisce_nb = [c for c in mano if c.seme != briscola and c.punti == 0]
+
+        if bot_card.punti >= 10:
+            if vincenti_nb:
+                card = min(vincenti_nb, key=lambda c: (c.punti, c.forza))
+                reason = "Il bot ha giocato un carico: prendilo con la carta vincente meno costosa."
+            elif vincenti_b:
+                card = min(vincenti_b, key=lambda c: (c.punti, c.forza))
+                reason = "Il bot ha giocato un carico: vale la pena usare la briscola più bassa che prende."
+            else:
+                card = lowest(lisce_nb or lisce or mano)
+                reason = "Non puoi prendere il carico: scarta la carta meno preziosa."
+            return self.player.index(card), reason
+
+        if bot_card.punti == 0:
+            cheap_winners = [c for c in vincenti_nb if c.punti < 10]
+            if cheap_winners:
+                card = min(cheap_winners, key=lambda c: (c.punti, c.forza))
+                reason = "Puoi prendere senza sprecare carichi o briscole: buona scelta prudente."
+            elif lisce_nb:
+                card = lowest(lisce_nb)
+                reason = "La carta del bot vale 0: non sprecare briscole, scarta una liscia."
+            elif lisce:
+                card = lowest(lisce)
+                reason = "La mano vale poco: meglio liberarsi di una carta da 0."
+            else:
+                card = lowest(mano)
+                reason = "La mano vale poco: gioca la carta meno costosa."
+            return self.player.index(card), reason
+
+        # Bot ha giocato una figura.
+        cheap_winners = [c for c in vincenti_nb if c.punti < 10]
+        if cheap_winners:
+            card = min(cheap_winners, key=lambda c: (c.punti, c.forza))
+            reason = "Prendi la figura usando una carta non troppo preziosa."
+        elif lisce_nb:
+            card = lowest(lisce_nb)
+            reason = "Non conviene spendere troppo su pochi punti: scarta una liscia non briscola."
+        elif vincenti_b and bot_card.punti >= 3:
+            card = min(vincenti_b, key=lambda c: (c.punti, c.forza))
+            reason = "Puoi prendere con una briscola bassa; fallo solo perché sul tavolo ci sono punti."
+        else:
+            card = lowest(lisce or mano)
+            reason = "Meglio perdere con la carta meno preziosa."
+
+        return self.player.index(card), reason
+
     def get_training_tip(self, idx):
         if idx < 0 or idx >= len(self.player):
             return ""
 
         carta = self.player[idx]
+
+        if getattr(self, "interactive_tutorial", False):
+            best_idx, reason = self.get_tutorial_recommendation()
+            if best_idx == idx:
+                return f"Consigliata: {reason}"
+            if best_idx is not None:
+                best_card = self.player[best_idx]
+                return f"Si può giocare, ma il consiglio è {self.card_to_text(best_card)}: {reason}"
 
         if self.lock or not self.turn_player:
             return "Aspetta il tuo turno."
@@ -953,23 +1074,10 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
     def show_user_profile(self):
         try:
-            profile = json.loads(Path(PROFILE_FILE).read_text(encoding="utf-8")) if Path(PROFILE_FILE).exists() else {}
-        except Exception:
-            profile = {}
-
-        username = profile.get("username", "")
-        online = profile.get("online", {})
-
-        text = f"PROFILO UTENTE\n\nNome utente fisso: {username or '(non impostato)'}\n\n"
-        text += "CONTRO BOT\nLe statistiche dettagliate sono in Statistiche → Mostra statistiche.\n\n"
-        text += "ONLINE\n"
-        text += f"Partite: {online.get('partite', 0)}\n"
-        text += f"Vittorie: {online.get('vittorie', 0)}\n"
-        text += f"Sconfitte: {online.get('sconfitte', 0)}\n"
-        text += f"Pareggi: {online.get('pareggi', 0)}\n"
-        text += f"Winstreak online: {online.get('winstreak_attuale', 0)}\n"
-
-        messagebox.showinfo("Profilo utente", text)
+            from briscola_launcher import show_profile
+            show_profile(self.root)
+        except Exception as exc:
+            messagebox.showerror("Profilo", f"Non riesco ad aprire il profilo completo:\n{exc}")
 
     def setup_menu(self):
         self.menu_bar = tk.Menu(self.root)
@@ -1367,24 +1475,40 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
                 anchor="center"
             )
 
-        if self.training_mode.get() and getattr(self, "training_tip", ""):
+        tutorial_text = ""
+
+        if getattr(self, "interactive_tutorial", False) and getattr(self, "turn_player", False) and not getattr(self, "lock", False):
+            best_idx, reason = self.get_tutorial_recommendation()
+            if best_idx is not None and 0 <= best_idx < len(self.player):
+                tutorial_text = f"Tutorial: gioca {self.card_to_text(self.player[best_idx])}. {reason}"
+            elif reason:
+                tutorial_text = f"Tutorial: {reason}"
+
+        elif self.training_mode.get() and getattr(self, "training_tip", ""):
+            tutorial_text = self.training_tip
+
+        if tutorial_text:
+            if len(tutorial_text) > 150:
+                tutorial_text = tutorial_text[:147] + "..."
+
             self.rounded_rect(
-                cx - 270,
-                h - 116,
-                cx + 270,
+                cx - 360,
+                h - 124,
+                cx + 360,
                 h - 82,
                 r=14,
                 fill=BLACKISH,
                 outline=GOLD,
                 width=1
             )
-            self.draw_text(
+            self.canvas.create_text(
                 cx,
-                h - 99,
-                self.training_tip,
-                size=10,
-                color=WHITE,
-                weight="bold"
+                h - 103,
+                text=tutorial_text,
+                fill=WHITE,
+                font=("Segoe UI", 10, "bold"),
+                width=690,
+                anchor="center"
             )
 
         # Slot carte giocate
@@ -1495,6 +1619,11 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
                 outline = GOLD if getattr(self, "turn_player", True) and not getattr(self, "lock", False) else TABLE_LIGHT
 
+                if getattr(self, "interactive_tutorial", False) and getattr(self, "turn_player", False) and not getattr(self, "lock", False):
+                    best_idx, _ = self.get_tutorial_recommendation()
+                    if best_idx == i:
+                        outline = "#00e5ff"
+
                 self.draw_card(
                     x,
                     y,
@@ -1579,8 +1708,8 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.start_game()
 
     def exit_game(self, event=None):
-        if messagebox.askyesno("Esci", "Vuoi uscire dal gioco?"):
-            self.root.destroy()
+        if messagebox.askyesno("Menu principale", "Vuoi tornare al menu principale?"):
+            self.return_to_main_menu()
 
     def cambia_difficolta(self, nuovo_livello):
         if messagebox.askyesno(
@@ -1690,7 +1819,7 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         def esci_senza_giocare():
             self.app_should_close = True
             dialog.destroy()
-            self.root.destroy()
+            self.return_to_main_menu()
 
         ok_btn = ttk.Button(
             button_frame,
@@ -2485,7 +2614,7 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
         def esci():
             dialog.destroy()
-            self.root.destroy()
+            self.return_to_main_menu()
 
         ttk.Button(btn_frame, text="Nuova partita", command=nuova, width=15).pack(side="right", padx=(8, 0))
         ttk.Button(btn_frame, text="Statistiche", command=statistiche, width=13).pack(side="right", padx=(8, 0))
