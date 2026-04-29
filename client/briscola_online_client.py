@@ -131,14 +131,21 @@ class OnlineBriscolaClient:
             raise ValueError("Server URL vuoto.")
 
         if url.startswith("http://"):
-            return "ws://" + url[len("http://"):]
-        if url.startswith("https://"):
-            return "wss://" + url[len("https://"):]
-        if url.startswith("ws://") or url.startswith("wss://"):
-            return url
+            url = "ws://" + url[len("http://"):]
+        elif url.startswith("https://"):
+            url = "wss://" + url[len("https://"):]
+        elif not (url.startswith("ws://") or url.startswith("wss://")):
+            # Comodo per test locali: localhost:8765 diventa ws://localhost:8765
+            url = "ws://" + url
 
-        # Comodo per test locali: localhost:8765 diventa ws://localhost:8765
-        return "ws://" + url
+        url = url.rstrip("/")
+
+        # Il nuovo server FastAPI espone il WebSocket su /ws.
+        # Se l'utente inserisce solo il dominio Render, lo aggiungiamo noi.
+        if not url.endswith("/ws"):
+            url += "/ws"
+
+        return url
 
     def send(self, obj):
         if not self.ws:
@@ -199,7 +206,7 @@ class OnlineBriscolaClient:
 
         mode = tk.StringVar(value="create")
         name_var = tk.StringVar(value="Giocatore")
-        server_var = tk.StringVar(value="wss://INSERISCI-URL-RENDER.onrender.com")
+        server_var = tk.StringVar(value="wss://briscola-online-wh5m.onrender.com/ws")
         room_var = tk.StringVar(value="")
 
         ttk.Label(main, text="Partita online", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
@@ -209,7 +216,7 @@ class OnlineBriscolaClient:
         ttk.Entry(main, textvariable=server_var, width=42).grid(row=2, column=1, sticky="ew", pady=3)
         ttk.Label(
             main,
-            text="Esempio: wss://nome-servizio.onrender.com",
+            text="Esempio: wss://nome-servizio.onrender.com/ws",
             font=("Segoe UI", 8)
         ).grid(row=3, column=1, sticky="w", pady=(0, 4))
 

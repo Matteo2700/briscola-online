@@ -5,7 +5,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
-import websockets
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 
 HOST = "0.0.0.0"
@@ -39,8 +40,10 @@ def make_card(seme: str, nome: str, punti: int, forza: int) -> dict[str, Any]:
 
 def make_deck() -> list[dict[str, Any]]:
     deck = [make_card(s, n, p, f) for s in SEMI for n, p, f in VALORI]
+
     for _ in range(5):
         random.shuffle(deck)
+
     return deck
 
 
@@ -65,7 +68,7 @@ def winner_of_trick(
 
 @dataclass
 class Client:
-    websocket: Any
+    websocket: WebSocket
     name: str = "Giocatore"
     room_code: str | None = None
     seat: str | None = None
@@ -73,7 +76,7 @@ class Client:
 
     async def send(self, obj: dict[str, Any]) -> None:
         try:
-            await self.websocket.send(json.dumps(obj, ensure_ascii=False))
+            await self.websocket.send_text(json.dumps(obj, ensure_ascii=False))
         except Exception:
             self.alive = False
 
@@ -117,6 +120,7 @@ class Room:
         for card in self.hands[seat]:
             if card["id"] == card_id:
                 return card
+
         return None
 
     async def play_card(self, seat: str, card_id: str) -> tuple[bool, str]:
@@ -168,6 +172,7 @@ class Room:
 
             first = self.chi_inizia
             second = self.other(first)
+
             winner = winner_of_trick(
                 first,
                 self.played[first],
@@ -175,6 +180,7 @@ class Room:
                 self.played[second],
                 self.seme_briscola,
             )
+
             loser = self.other(winner)
 
             points = self.played["p1"]["punti"] + self.played["p2"]["punti"]
@@ -255,6 +261,7 @@ class BriscolaServer:
     def new_room_code(self) -> str:
         while True:
             code = str(random.randint(100000, 999999))
+
             if code not in self.rooms:
                 return code
 
@@ -345,53 +352,66 @@ class BriscolaServer:
 
         await self.broadcast(room)
 
-    async def handler(self, websocket: Any) -> None:
-        client = Client(websocket=websocket)
-        self.clients.add(client)
+    async def handle_message(self, client: Client, msg: dict[str, Any]) -> None:
+        typ = msg.get("type")
 
+        if typ == "create":
+            await self.handle_create(client, msg)
+        elif typ == "join":
+            await self.handle_join(client, msg)
+        elif typ == "play":
+            await self.handle_play(client, msg)
+        elif typ == "ping":
+            await client.send({"type": "pong"})
+        else:
+            await self.send_error(client, f"Comando sconosciuto: {typ}")
+
+
+server = BriscolaServer()
+app = FastAPI()
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "name": "Briscola online server",
+        "websocket": "/ws",
+    }
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    await websocket.accept()
+    client = Client(websocket=websocket)
+    server.clients.add(client)
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            await server.handle_message(client, msg)
+
+    except WebSocketDisconnect:
+        pass
+
+    except Exception as exc:
         try:
-            async for raw in websocket:
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    await self.send_error(client, "Messaggio non valido.")
-                    continue
-
-                typ = msg.get("type")
-
-                if typ == "create":
-                    await self.handle_create(client, msg)
-                elif typ == "join":
-                    await self.handle_join(client, msg)
-                elif typ == "play":
-                    await self.handle_play(client, msg)
-                elif typ == "ping":
-                    await client.send({"type": "pong"})
-                else:
-                    await self.send_error(client, f"Comando sconosciuto: {typ}")
-
+            await client.send({"type": "error", "message": f"Errore server: {exc}"})
         except Exception:
             pass
-        finally:
-            await self.handle_disconnect(client)
-            self.clients.discard(client)
 
-
-async def main() -> None:
-    server = BriscolaServer()
-
-    print(f"Server Briscola online in ascolto su {HOST}:{PORT}")
-    print("Su Render usa l'URL pubblico del servizio con wss://")
-
-    async with websockets.serve(
-        server.handler,
-        HOST,
-        PORT,
-        ping_interval=20,
-        ping_timeout=20,
-    ):
-        await asyncio.Future()
+    finally:
+        await server.handle_disconnect(client)
+        server.clients.discard(client)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    print(f"Server Briscola online FastAPI in ascolto su {HOST}:{PORT}")
+    print("HTTP check: /")
+    print("WebSocket: /ws")
+    uvicorn.run(app, host=HOST, port=PORT)

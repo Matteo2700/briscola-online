@@ -56,7 +56,7 @@ python briscola_online_server.py
 Nel client, come Server URL usa:
 
 ```text
-ws://localhost:8765
+ws://localhost:8765/ws
 ```
 
 ## Deploy server su Render
@@ -76,7 +76,7 @@ https://briscola-online-server.onrender.com
 Nel client usa lo stesso URL ma con `wss://`:
 
 ```text
-wss://briscola-online-server.onrender.com
+wss://briscola-online-server.onrender.com/ws
 ```
 
 ## Note
