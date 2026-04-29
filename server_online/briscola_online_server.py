@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -263,6 +264,30 @@ class BriscolaServer:
         self.rooms: dict[str, Room] = {}
         self.lock = asyncio.Lock()
 
+    def normalize_custom_room_code(self, raw: str) -> str:
+        code = (raw or "").strip()
+
+        if not code:
+            return ""
+
+        # Per evitare codici ingestibili:
+        # - niente spazi
+        # - niente simboli strani
+        # - massimo 20 caratteri
+        # - case-insensitive: "Casa" e "CASA" sono la stessa stanza.
+        code = code.upper()
+
+        if len(code) < 3:
+            raise ValueError("Il codice stanza deve avere almeno 3 caratteri.")
+
+        if len(code) > 20:
+            raise ValueError("Il codice stanza può avere al massimo 20 caratteri.")
+
+        if not re.fullmatch(r"[A-Z0-9_-]+", code):
+            raise ValueError("Il codice stanza può contenere solo lettere, numeri, trattino e underscore.")
+
+        return code
+
     def new_room_code(self) -> str:
         while True:
             code = str(random.randint(100000, 999999))
@@ -292,8 +317,19 @@ class BriscolaServer:
     async def handle_create(self, client: Client, msg: dict[str, Any]) -> None:
         name = (msg.get("name") or "Giocatore 1").strip() or "Giocatore 1"
 
+        try:
+            requested_code = self.normalize_custom_room_code(str(msg.get("room") or ""))
+        except ValueError as exc:
+            await self.send_error(client, str(exc))
+            return
+
         async with self.lock:
-            code = self.new_room_code()
+            code = requested_code or self.new_room_code()
+
+            if code in self.rooms:
+                await self.send_error(client, "Esiste già una stanza con questo codice.")
+                return
+
             room = Room(code=code)
             self.rooms[code] = room
 
@@ -306,7 +342,12 @@ class BriscolaServer:
         await self.broadcast(room)
 
     async def handle_join(self, client: Client, msg: dict[str, Any]) -> None:
-        code = str(msg.get("room") or "").strip()
+        try:
+            code = self.normalize_custom_room_code(str(msg.get("room") or ""))
+        except ValueError as exc:
+            await self.send_error(client, str(exc))
+            return
+
         name = (msg.get("name") or "Giocatore 2").strip() or "Giocatore 2"
 
         async with self.lock:

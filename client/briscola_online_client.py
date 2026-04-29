@@ -238,8 +238,14 @@ class OnlineBriscolaClient:
         ttk.Radiobutton(lf, text="Crea nuova stanza", variable=mode, value="create").grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(lf, text="Entra in stanza", variable=mode, value="join").grid(row=1, column=0, sticky="w")
         ttk.Label(lf, text="Codice stanza").grid(row=2, column=0, sticky="w", pady=(8,0))
-        room_entry = ttk.Entry(lf, textvariable=room_var, width=16)
+        room_entry = ttk.Entry(lf, textvariable=room_var, width=20)
         room_entry.grid(row=2, column=1, sticky="w", padx=(8,0), pady=(8,0))
+
+        ttk.Label(
+            lf,
+            text="Se crei: vuoto = automatico",
+            font=("Segoe UI", 8)
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         buttons = ttk.Frame(main)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12,0))
@@ -260,10 +266,14 @@ class OnlineBriscolaClient:
             try:
                 self.connect(server_var.get().strip())
 
+                room_code = room_var.get().strip()
+
                 if mode.get() == "create":
-                    self.send({"type": "create", "name": nome})
+                    # Se room_code è vuoto, il server genera un codice automatico.
+                    # Se è compilato, prova a creare la stanza con quel codice personalizzato.
+                    self.send({"type": "create", "name": nome, "room": room_code})
                 else:
-                    self.send({"type": "join", "name": nome, "room": room_var.get().strip()})
+                    self.send({"type": "join", "name": nome, "room": room_code})
 
                 dialog.destroy()
 
