@@ -66,11 +66,6 @@ class OnlineBriscolaClient:
 
         self.profile = self.load_profile()
         self.online_stats_recorded = False
-        self.disconnect_shown = False
-        self.match_target = 1
-        self.match_score_you = 0
-        self.match_score_opponent = 0
-        self.round_number = 1
 
         self.ws = None
         self.connected = False
@@ -299,11 +294,51 @@ class OnlineBriscolaClient:
         return "\n".join(righe)
 
     def show_profile(self):
-        try:
-            from briscola_launcher import show_profile
-            show_profile(self.root)
-        except Exception as exc:
-            messagebox.showerror("Profilo", f"Non riesco ad aprire il profilo completo:\n{exc}")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Profilo utente")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
+        if self.app_icon:
+            try:
+                dialog.iconphoto(True, self.app_icon)
+            except Exception:
+                pass
+
+        frame = ttk.Frame(dialog, padding=(14, 14, 14, 14))
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Nome utente fisso").grid(row=0, column=0, sticky="w")
+        username_var = tk.StringVar(value=self.profile.get("username", ""))
+        entry = ttk.Entry(frame, textvariable=username_var, width=32)
+        entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        text = tk.Text(frame, width=56, height=26, wrap="word", font=("Consolas", 10))
+        text.grid(row=1, column=0, columnspan=2, pady=(12, 0), sticky="nsew")
+
+        def refresh_text():
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.insert("1.0", self.format_profile_text())
+            text.configure(state="disabled")
+
+        refresh_text()
+
+        btns = ttk.Frame(frame)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def save_and_refresh():
+            self.save_username(username_var.get())
+            refresh_text()
+            messagebox.showinfo("Profilo", "Nome utente salvato.")
+
+        ttk.Button(btns, text="Salva nome", command=save_and_refresh).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Chiudi", command=dialog.destroy).pack(side="right")
+
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_reqwidth() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_reqheight() // 2)
+        dialog.geometry(f"+{x}+{y}")
 
     def return_to_main_menu(self):
         launcher = Path(__file__).with_name("briscola_launcher.py")
@@ -324,10 +359,9 @@ class OnlineBriscolaClient:
         m = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Online", menu=m)
         m.add_command(label="Connetti / cambia stanza", command=self.show_connect_dialog)
-        m.add_command(label="Copia codice stanza", command=self.copy_room_code)
         m.add_separator()
         m.add_command(label="Torna al menu principale", command=self.return_to_main_menu)
-        m.add_command(label="Esci", command=self.return_to_main_menu)
+        m.add_command(label="Esci", command=self.root.destroy)
 
         self.menu_animazioni = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Animazioni", menu=self.menu_animazioni)
@@ -421,18 +455,7 @@ class OnlineBriscolaClient:
         self.connected = True
         self.game_over_shown = False
         self.online_stats_recorded = False
-        self.disconnect_shown = False
         threading.Thread(target=self.receiver_thread, daemon=True).start()
-
-    def copy_room_code(self):
-        if not self.room_code:
-            messagebox.showinfo("Codice stanza", "Non sei ancora in una stanza.")
-            return
-
-        self.root.clipboard_clear()
-        self.root.clipboard_append(self.room_code)
-        self.root.update()
-        self.set_status(f"Codice stanza copiato: {self.room_code}")
 
     def send_animation_settings(self):
         if self.updating_animation_settings:
@@ -473,7 +496,6 @@ class OnlineBriscolaClient:
         name_var = tk.StringVar(value=self.profile.get("username", ""))
         server_var = tk.StringVar(value="wss://briscola-online-wh5m.onrender.com/ws")
         room_var = tk.StringVar(value="")
-        match_var = tk.IntVar(value=1)
 
         ttk.Label(main, text="Partita online", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
         ttk.Label(main, text="Nome").grid(row=1, column=0, sticky="w")
@@ -495,14 +517,9 @@ class OnlineBriscolaClient:
         room_entry = ttk.Entry(lf, textvariable=room_var, width=20)
         room_entry.grid(row=2, column=1, sticky="w", padx=(8,0), pady=(8,0))
 
-        match_box = ttk.LabelFrame(main, text="Modalità partita", padding=(10, 8, 10, 8))
-        match_box.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Radiobutton(match_box, text="Partita singola", variable=match_var, value=1).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(match_box, text="Meglio di 3", variable=match_var, value=2).grid(row=1, column=0, sticky="w")
-        ttk.Radiobutton(match_box, text="Meglio di 5", variable=match_var, value=3).grid(row=2, column=0, sticky="w")
 
         buttons = ttk.Frame(main)
-        buttons.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12,0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12,0))
 
         def go():
             nome = name_var.get().strip()
@@ -526,12 +543,7 @@ class OnlineBriscolaClient:
                 if mode.get() == "create":
                     # Se room_code è vuoto, il server genera un codice automatico.
                     # Se è compilato, prova a creare la stanza con quel codice personalizzato.
-                    self.send({
-                        "type": "create",
-                        "name": nome,
-                        "room": room_code,
-                        "match_target": int(match_var.get())
-                    })
+                    self.send({"type": "create", "name": nome, "room": room_code})
                 else:
                     self.send({"type": "join", "name": nome, "room": room_code})
 
@@ -540,17 +552,8 @@ class OnlineBriscolaClient:
             except Exception as e:
                 messagebox.showerror("Online", f"Connessione fallita:\n{e}")
 
-        def cancel_or_back():
-            dialog.destroy()
-
-            if not self.room_code:
-                self.return_to_main_menu()
-
         ttk.Button(buttons, text="Connetti", command=go).pack(side="right", padx=(8,0))
-        ttk.Button(buttons, text="Indietro", command=cancel_or_back).pack(side="right")
-        dialog.protocol("WM_DELETE_WINDOW", cancel_or_back)
-        dialog.bind("<Escape>", lambda event: cancel_or_back())
-
+        ttk.Button(buttons, text="Annulla", command=dialog.destroy).pack(side="right")
         name_entry.focus_set()
 
         dialog.update_idletasks()
@@ -594,10 +597,6 @@ class OnlineBriscolaClient:
         self.mani_b = int(st.get("opponent_tricks", 0))
         self.punti_p = int(st.get("your_points", 0))
         self.punti_b = int(st.get("opponent_points", 0))
-        self.match_target = int(st.get("match_target", 1) or 1)
-        self.match_score_you = int(st.get("match_score_you", 0) or 0)
-        self.match_score_opponent = int(st.get("match_score_opponent", 0) or 0)
-        self.round_number = int(st.get("round_number", 1) or 1)
 
         self.turn_player = bool(st.get("turn_is_you", False))
         self.lock = not self.turn_player
@@ -616,45 +615,27 @@ class OnlineBriscolaClient:
 
         self.render()
 
-        if st.get("disconnect") and not self.disconnect_shown:
-            self.disconnect_shown = True
-            self.game_over_shown = True
-
-            torna = messagebox.askyesno(
-                "Avversario disconnesso",
-                "L'avversario si è disconnesso.\n\nVuoi tornare al menu principale?"
-            )
-
-            if torna:
-                self.return_to_main_menu()
-            return
-
         if st.get("game_over") and not self.game_over_shown:
+            # Se la partita è finita perché uno si è disconnesso, non è un pareggio
+            # e non va mostrato il riepilogo punti.
+            if st.get("disconnect"):
+                self.game_over_shown = True
+                return
+
             self.game_over_shown = True
             self.record_online_stats()
 
-            if self.match_target > 1:
-                if self.match_score_you > self.match_score_opponent:
-                    res = "Hai vinto il match!"
-                else:
-                    res = "Hai perso il match!"
-
-                extra = f"\nMatch: {self.your_name} {self.match_score_you} | {self.opponent_name} {self.match_score_opponent}"
+            if self.punti_p > self.punti_b:
+                res = "Hai vinto!"
+            elif self.punti_p < self.punti_b:
+                res = "Hai perso!"
             else:
-                if self.punti_p > self.punti_b:
-                    res = "Hai vinto!"
-                elif self.punti_p < self.punti_b:
-                    res = "Hai perso!"
-                else:
-                    res = "Pareggio!"
-
-                extra = ""
+                res = "Pareggio!"
 
             messagebox.showinfo(
                 "Fine partita",
                 f"{res}\n\n"
                 f"{self.your_name}: {self.punti_p} | {self.opponent_name}: {self.punti_b}"
-                f"{extra}"
             )
 
     def translate_server_status(self, status):
@@ -1058,14 +1039,8 @@ class OnlineBriscolaClient:
         txt = "Online" + (f" | stanza {self.room_code}" if self.room_code else "")
         status_txt = self.status or ""
 
-        if self.match_target > 1 and self.room_code:
-            status_txt = (
-                f"Match {self.match_score_you}-{self.match_score_opponent} | "
-                f"Partita {self.round_number} | {status_txt}"
-            )
-
-        approx_w = max(len(txt) * 9, len(status_txt) * 7) + 94
-        panel_w = max(300, min(620, approx_w))
+        approx_w = max(len(txt) * 9, len(status_txt) * 7) + 44
+        panel_w = max(250, min(520, approx_w))
 
         self.rounded_rect(75, h-100, 75 + panel_w, h-45, r=17, fill=BLACKISH, outline="#1ca956", width=2)
 
@@ -1087,18 +1062,6 @@ class OnlineBriscolaClient:
             anchor="w",
             width=panel_w - 35
         )
-
-        if self.room_code:
-            copy_x1 = 75 + panel_w - 82
-            copy_y1 = h - 91
-            copy_x2 = 75 + panel_w - 13
-            copy_y2 = h - 72
-
-            self.rounded_rect(copy_x1, copy_y1, copy_x2, copy_y2, r=8, fill=TABLE_DARK, outline=GOLD, width=1, tags="copy_room_btn")
-            self.canvas.create_text((copy_x1 + copy_x2) / 2, (copy_y1 + copy_y2) / 2, text="COPIA", fill=GOLD, font=("Segoe UI", 8, "bold"), tags="copy_room_btn")
-            self.canvas.tag_bind("copy_room_btn", "<Button-1>", lambda event: self.copy_room_code())
-            self.canvas.tag_bind("copy_room_btn", "<Enter>", lambda event: self.canvas.config(cursor="hand2"))
-            self.canvas.tag_bind("copy_room_btn", "<Leave>", lambda event: self.canvas.config(cursor=""))
 
         self.draw_empty_slot(played_bot_x, played_y, "AVV", active=False)
         self.draw_empty_slot(played_player_x, played_y, "TU", active=self.turn_player)

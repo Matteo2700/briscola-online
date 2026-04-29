@@ -155,7 +155,7 @@ class Mazzo:
 # ============================================================
 
 class BriscolaGame:
-    def __init__(self, root, initial_difficulty=None, match_target=1):
+    def __init__(self, root):
         self.root = root
         self.root.title("Briscola")
         self.root.geometry("1300x720")
@@ -163,11 +163,6 @@ class BriscolaGame:
 
         self.app_should_close = False
         self.app_icon = None
-
-        self.match_target = max(1, int(match_target or 1))
-        self.match_player_wins = 0
-        self.match_bot_wins = 0
-        self.match_round = 1
 
         try:
             self.root.state("zoomed")
@@ -178,8 +173,7 @@ class BriscolaGame:
 
         self.settings = self.load_settings()
 
-        difficulty = initial_difficulty or self.settings.get("difficolta", "Medio")
-        self.livello = tk.StringVar(value=difficulty)
+        self.livello = tk.StringVar(value=self.settings.get("difficolta", "Medio"))
         self.livello_attivo = self.livello.get()
 
         self.debug_bot = tk.BooleanVar(value=bool(self.settings.get("debug_bot", False)))
@@ -231,10 +225,7 @@ class BriscolaGame:
 
         self.canvas.bind("<Configure>", lambda e: self.render())
 
-        if initial_difficulty is None:
-            self.scelta_difficolta_iniziale()
-        else:
-            self.save_settings()
+        self.scelta_difficolta_iniziale()
 
         if self.app_should_close:
             return
@@ -856,8 +847,6 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
                 return "Prendo il carico con una carta vincente."
 
             if scelta.seme == self.seme_briscola and self.c_p.seme != self.seme_briscola:
-                if self.c_p.punti == 0 and scelta.punti < 10:
-                    return "Uso una briscola sacrificabile per non regalare un carico."
                 return "Uso una briscola per prendere la mano."
 
             if scelta.punti >= 10:
@@ -964,10 +953,23 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
     def show_user_profile(self):
         try:
-            from briscola_launcher import show_profile
-            show_profile(self.root)
-        except Exception as exc:
-            messagebox.showerror("Profilo", f"Non riesco ad aprire il profilo completo:\n{exc}")
+            profile = json.loads(Path(PROFILE_FILE).read_text(encoding="utf-8")) if Path(PROFILE_FILE).exists() else {}
+        except Exception:
+            profile = {}
+
+        username = profile.get("username", "")
+        online = profile.get("online", {})
+
+        text = f"PROFILO UTENTE\n\nNome utente fisso: {username or '(non impostato)'}\n\n"
+        text += "CONTRO BOT\nLe statistiche dettagliate sono in Statistiche → Mostra statistiche.\n\n"
+        text += "ONLINE\n"
+        text += f"Partite: {online.get('partite', 0)}\n"
+        text += f"Vittorie: {online.get('vittorie', 0)}\n"
+        text += f"Sconfitte: {online.get('sconfitte', 0)}\n"
+        text += f"Pareggi: {online.get('pareggi', 0)}\n"
+        text += f"Winstreak online: {online.get('winstreak_attuale', 0)}\n"
+
+        messagebox.showinfo("Profilo utente", text)
 
     def setup_menu(self):
         self.menu_bar = tk.Menu(self.root)
@@ -996,6 +998,11 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.menu_opzioni.add_checkbutton(
             label="Debug bot: mostra carte",
             variable=self.debug_bot,
+            command=self.on_setting_changed
+        )
+        self.menu_opzioni.add_checkbutton(
+            label="Modalità allenamento",
+            variable=self.training_mode,
             command=self.on_setting_changed
         )
         self.menu_opzioni.add_separator()
@@ -1572,8 +1579,8 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.start_game()
 
     def exit_game(self, event=None):
-        if messagebox.askyesno("Menu principale", "Vuoi tornare al menu principale?"):
-            self.return_to_main_menu()
+        if messagebox.askyesno("Esci", "Vuoi uscire dal gioco?"):
+            self.root.destroy()
 
     def cambia_difficolta(self, nuovo_livello):
         if messagebox.askyesno(
@@ -1683,7 +1690,7 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         def esci_senza_giocare():
             self.app_should_close = True
             dialog.destroy()
-            self.return_to_main_menu()
+            self.root.destroy()
 
         ok_btn = ttk.Button(
             button_frame,
@@ -1938,28 +1945,17 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         if lisce_nb:
             return min(lisce_nb, key=lambda c: c.forza)
 
-        # FIX importante:
-        # se il bot non può prendere senza briscola e in mano ha solo carichi
-        # non briscola, non deve regalarli su una carta avversaria liscia.
-        # In quel caso una briscola non-carico, anche se figura, è sacrificabile.
-        #
-        # Esempio:
-        # - briscola = coppe
-        # - tu giochi un bastone liscio
-        # - bot ha 3 di spade, fante di coppe, asso di coppe
-        # Prima buttava il 3 di spade regalando 10 punti.
-        # Ora usa il fante di coppe e tiene salvo il carico.
-        if carichi_nb and briscole:
-            briscole_sacrificabili = [c for c in briscole if c.punti < 10]
-
-            if briscole_sacrificabili:
-                return min(briscole_sacrificabili, key=lambda c: (c.punti, c.forza))
-
         if len(carichi_nb) >= 2 and briscole:
             briscole_figure = [c for c in briscole if 0 < c.punti < 10]
 
             if briscole_figure:
                 return min(briscole_figure, key=lambda c: (c.punti, c.forza))
+
+        if carichi_nb and briscole:
+            briscole_lisce = [c for c in briscole if c.punti == 0]
+
+            if briscole_lisce:
+                return min(briscole_lisce, key=lambda c: c.forza)
 
         return self._scarta_piu_bassa(mano, briscole, non_briscole)
 
@@ -2089,28 +2085,17 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         if lisce_nb:
             return min(lisce_nb, key=lambda c: c.forza)
 
-        # FIX importante:
-        # se il bot non può prendere senza briscola e in mano ha solo carichi
-        # non briscola, non deve regalarli su una carta avversaria liscia.
-        # In quel caso una briscola non-carico, anche se figura, è sacrificabile.
-        #
-        # Esempio:
-        # - briscola = coppe
-        # - tu giochi un bastone liscio
-        # - bot ha 3 di spade, fante di coppe, asso di coppe
-        # Prima buttava il 3 di spade regalando 10 punti.
-        # Ora usa il fante di coppe e tiene salvo il carico.
-        if carichi_nb and briscole:
-            briscole_sacrificabili = [c for c in briscole if c.punti < 10]
-
-            if briscole_sacrificabili:
-                return min(briscole_sacrificabili, key=lambda c: (c.punti, c.forza))
-
         if len(carichi_nb) >= 2 and briscole:
             briscole_figure = [c for c in briscole if 0 < c.punti < 10]
 
             if briscole_figure:
                 return min(briscole_figure, key=lambda c: (c.punti, c.forza))
+
+        if carichi_nb and briscole:
+            briscole_lisce = [c for c in briscole if c.punti == 0]
+
+            if briscole_lisce:
+                return min(briscole_lisce, key=lambda c: c.forza)
 
         return self._scarta_piu_bassa(mano, briscole, non_briscole)
 
@@ -2418,11 +2403,9 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         if self.punti_p > 60:
             res = "HAI VINTO!"
             result_key = "vittoria"
-            self.match_player_wins += 1
         elif self.punti_b > 60:
             res = "HAI PERSO!"
             result_key = "sconfitta"
-            self.match_bot_wins += 1
         else:
             res = "PAREGGIO!"
             result_key = "pareggio"
@@ -2446,44 +2429,26 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         main = ttk.Frame(dialog, padding=(22, 18, 22, 16))
         main.pack(fill="both", expand=True)
 
-        match_mode = self.match_target > 1
-        match_finished = (
-            not match_mode or
-            self.match_player_wins >= self.match_target or
-            self.match_bot_wins >= self.match_target
-        )
+        ttk.Label(
+            main,
+            text="FINE PARTITA",
+            font=("Segoe UI", 16, "bold")
+        ).grid(row=0, column=0, columnspan=2, pady=(0, 8))
 
-        title = "FINE PARTITA"
-        if match_mode:
-            title = "FINE MATCH" if match_finished else f"FINE PARTITA {self.match_round}"
-
-        ttk.Label(main, text=title, font=("Segoe UI", 16, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 8))
-
-        if match_mode and match_finished:
-            shown_res = "HAI VINTO IL MATCH!" if self.match_player_wins > self.match_bot_wins else "HAI PERSO IL MATCH!"
-        else:
-            shown_res = res
-
-        ttk.Label(main, text=shown_res, font=("Segoe UI", 13, "bold")).grid(row=1, column=0, columnspan=2, pady=(0, 16))
-
-        mode_text = "Partita singola"
-        if self.match_target == 2:
-            mode_text = "Meglio di 3"
-        elif self.match_target == 3:
-            mode_text = "Meglio di 5"
+        ttk.Label(
+            main,
+            text=res,
+            font=("Segoe UI", 13, "bold")
+        ).grid(row=1, column=0, columnspan=2, pady=(0, 16))
 
         rows = [
-            ("Modalità", mode_text),
-            ("Punti partita", f"Tu {self.punti_p} | Bot {self.punti_b}"),
+            ("Punti", f"Tu {self.punti_p} | Bot {self.punti_b}"),
             ("Mani vinte", f"Tu {self.mani_p} | Bot {self.mani_b}"),
             ("Briscola", str(getattr(self, "seme_briscola", "")).upper()),
             ("Difficoltà", self.livello.get()),
             ("Winstreak attuale", str(self.stats.get("winstreak_attuale", 0))),
             ("Migliore winstreak", str(self.stats.get("winstreak_migliore", 0))),
         ]
-
-        if match_mode:
-            rows.insert(1, ("Score match", f"Tu {self.match_player_wins} | Bot {self.match_bot_wins}"))
 
         for r, (label, value) in enumerate(rows, start=2):
             ttk.Label(main, text=label + ":", font=("Segoe UI", 10, "bold")).grid(row=r, column=0, sticky="w", padx=(0, 16), pady=3)
@@ -2492,39 +2457,38 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         next_row = 2 + len(rows)
 
         if self.trofei_sbloccati_ultima_partita:
-            ttk.Label(main, text="Trofei sbloccati:", font=("Segoe UI", 10, "bold")).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=(14, 4))
+            ttk.Label(
+                main,
+                text="Trofei sbloccati:",
+                font=("Segoe UI", 10, "bold")
+            ).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=(14, 4))
+
             next_row += 1
+
             for trophy in self.trofei_sbloccati_ultima_partita:
-                ttk.Label(main, text=f"✓ {trophy}", font=("Segoe UI", 10)).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=2)
+                ttk.Label(
+                    main,
+                    text=f"✓ {trophy}",
+                    font=("Segoe UI", 10)
+                ).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=2)
                 next_row += 1
 
         btn_frame = ttk.Frame(main)
         btn_frame.grid(row=next_row, column=0, columnspan=2, sticky="e", pady=(18, 0))
 
-        def nuova_o_prossima():
+        def nuova():
             dialog.destroy()
-            if match_mode and not match_finished:
-                self.match_round += 1
-                self.reset_game_automatico()
-            else:
-                self.match_player_wins = 0
-                self.match_bot_wins = 0
-                self.match_round = 1
-                self.reset_game_automatico()
+            self.reset_game_automatico()
+
+        def statistiche():
+            self.show_stats()
 
         def esci():
             dialog.destroy()
-            self.return_to_main_menu()
+            self.root.destroy()
 
-        if match_mode and not match_finished:
-            new_label = "Prossima partita"
-        elif match_mode:
-            new_label = "Nuovo match"
-        else:
-            new_label = "Nuova partita"
-
-        ttk.Button(btn_frame, text=new_label, command=nuova_o_prossima, width=17).pack(side="right", padx=(8, 0))
-        ttk.Button(btn_frame, text="Statistiche", command=self.show_stats, width=13).pack(side="right", padx=(8, 0))
+        ttk.Button(btn_frame, text="Nuova partita", command=nuova, width=15).pack(side="right", padx=(8, 0))
+        ttk.Button(btn_frame, text="Statistiche", command=statistiche, width=13).pack(side="right", padx=(8, 0))
         ttk.Button(btn_frame, text="Esci", command=esci, width=10).pack(side="right")
 
         dialog.update_idletasks()

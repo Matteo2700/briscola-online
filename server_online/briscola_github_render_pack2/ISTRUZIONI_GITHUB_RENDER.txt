@@ -1,0 +1,51 @@
+# Come caricare su GitHub
+
+## Metodo da terminale
+
+Entra nella cartella `briscola_github_render_pack`:
+
+```bash
+cd briscola_github_render_pack
+git init
+git add .
+git commit -m "Prima versione Briscola online"
+git branch -M main
+git remote add origin https://github.com/TUO-USERNAME/briscola-online.git
+git push -u origin main
+```
+
+Prima devi creare su GitHub un repository vuoto chiamato ad esempio:
+
+```text
+briscola-online
+```
+
+Importante: crealo vuoto, senza README automatico, così non hai conflitti al primo push.
+
+## Metodo GitHub Desktop
+
+1. Apri GitHub Desktop.
+2. File → Add local repository.
+3. Seleziona la cartella `briscola_github_render_pack`.
+4. Pubblica il repository su GitHub.
+5. Scegli Private oppure Public.
+
+## Dopo GitHub
+
+Vai su Render e collega il repository.
+
+Se usi il `render.yaml`, Render dovrebbe leggere la configurazione.
+
+Se lo configuri manualmente:
+
+```text
+Root Directory: server_online
+Build Command: pip install -r requirements.txt
+Start Command: python briscola_online_server.py
+```
+
+Poi copi l'URL pubblico Render e nel client lo scrivi come:
+
+```text
+wss://nome-servizio.onrender.com
+```

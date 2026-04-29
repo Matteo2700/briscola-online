@@ -37,22 +37,19 @@ def load_icon(root):
 
 def choose_bot_difficulty(root):
     dialog = tk.Toplevel(root)
-    dialog.title("Scegli difficoltà")
+    dialog.title("Scegli partita")
     dialog.resizable(False, False)
     dialog.transient(root)
     dialog.grab_set()
 
     selected = tk.StringVar(value="Medio")
-    result = {"value": None}
+    match_var = tk.IntVar(value=1)
+    result = {"difficulty": None, "match_target": 1}
 
     frame = ttk.Frame(dialog, padding=(18, 16, 18, 14))
     frame.pack(fill="both", expand=True)
 
-    ttk.Label(
-        frame,
-        text="Scegli la difficoltà",
-        font=("Segoe UI", 12, "bold")
-    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+    ttk.Label(frame, text="Scegli la difficoltà", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
     levels = ttk.LabelFrame(frame, text="Difficoltà bot", padding=(12, 8, 12, 8))
     levels.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 14))
@@ -69,15 +66,23 @@ def choose_bot_difficulty(root):
     for i, liv in enumerate(right, start=1):
         ttk.Radiobutton(levels, text=liv, variable=selected, value=liv).grid(row=i, column=1, sticky="w", pady=3)
 
+    match_box = ttk.LabelFrame(frame, text="Modalità partita", padding=(12, 8, 12, 8))
+    match_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+
+    ttk.Radiobutton(match_box, text="Partita singola", variable=match_var, value=1).grid(row=0, column=0, sticky="w", pady=2)
+    ttk.Radiobutton(match_box, text="Meglio di 3", variable=match_var, value=2).grid(row=1, column=0, sticky="w", pady=2)
+    ttk.Radiobutton(match_box, text="Meglio di 5", variable=match_var, value=3).grid(row=2, column=0, sticky="w", pady=2)
+
     buttons = ttk.Frame(frame)
-    buttons.grid(row=2, column=0, columnspan=2, sticky="e")
+    buttons.grid(row=3, column=0, columnspan=2, sticky="e")
 
     def ok():
-        result["value"] = selected.get()
+        result["difficulty"] = selected.get()
+        result["match_target"] = int(match_var.get())
         dialog.destroy()
 
     def back():
-        result["value"] = None
+        result["difficulty"] = None
         dialog.destroy()
 
     ok_btn = ttk.Button(buttons, text="OK", width=12, command=ok)
@@ -96,13 +101,13 @@ def choose_bot_difficulty(root):
     ok_btn.focus_set()
     root.wait_window(dialog)
 
-    return result["value"]
+    return result if result["difficulty"] else None
 
 
 def start_bot(root):
-    difficulty = choose_bot_difficulty(root)
+    choice = choose_bot_difficulty(root)
 
-    if not difficulty:
+    if not choice:
         return
 
     root.destroy()
@@ -112,7 +117,11 @@ def start_bot(root):
     icon_ref = load_icon(r)
     r._icon_ref = icon_ref
 
-    game = BriscolaGame(r, initial_difficulty=difficulty)
+    game = BriscolaGame(
+        r,
+        initial_difficulty=choice["difficulty"],
+        match_target=choice["match_target"]
+    )
     if not getattr(game, "app_should_close", False):
         r.mainloop()
 
@@ -493,28 +502,19 @@ Asso, Tre, Re, Cavallo, Fante, 7, 6, 5, 4, 2.
 
 LA BRISCOLA
 Il seme indicato come BRISCOLA batte gli altri semi.
-Per esempio, se la briscola è DENARI, anche un 2 di denari può battere un asso di coppe.
-
-COME SI GIOCA NEL PROGRAMMA
-1. Scegli la modalità dal menu iniziale.
-2. Durante il tuo turno clicca con il mouse su una delle tue tre carte.
-3. Il bot o l'avversario giocherà automaticamente.
-4. Chi vince la mano prende le carte sul tavolo.
-5. Chi vince la mano pesca per primo.
-6. Quando il mazzo finisce, si giocano le ultime carte rimaste in mano.
-7. Alla fine compare il riepilogo con i punti.
+Una briscola batte qualsiasi carta non briscola.
 
 CONSIGLI BASE
-- Non sprecare briscole alte su carte che valgono 0.
-- Cerca di prendere assi e tre: sono i carichi.
-- Se giochi un carico, l'avversario potrebbe prenderlo con una briscola.
-- Se devi perdere una mano, prova a perdere con una carta che vale 0.
-- Verso fine partita conta molto ricordare quali briscole sono già uscite.
+- Non sprecare briscole alte su carte da 0.
+- Cerca di prendere assi e tre.
+- Se devi perdere una mano, perdi con una carta da 0.
+- Se il bot gioca un carico e puoi prenderlo, spesso conviene prenderlo.
+- Non regalare carichi quando puoi scartare carte lisce o sacrificabili.
 
 TUTORIAL INTERATTIVO
 Nel tutorial interattivo giochi una partita guidata contro il bot.
-Il gioco ti suggerisce quale carta giocare e ti spiega il perché.
-Puoi scegliere se vedere le carte del bot scoperte o coperte.
+Il bot usa logica Medio.
+Il gioco evidenzia una carta consigliata e spiega il motivo.
 """
 
 
@@ -537,18 +537,13 @@ def show_textual_tutorial(root):
 
 def start_interactive_tutorial(root, show_bot_cards):
     root.destroy()
-    from briscola_bot import BriscolaGame
+    from briscola_tutorial_interattivo import TutorialBriscolaGame
 
     r = tk.Tk()
     icon_ref = load_icon(r)
     r._icon_ref = icon_ref
 
-    game = BriscolaGame(
-        r,
-        initial_difficulty="Facile",
-        tutorial_mode=True,
-        tutorial_show_bot_cards=show_bot_cards
-    )
+    game = TutorialBriscolaGame(r, show_bot_cards=show_bot_cards)
 
     if not getattr(game, "app_should_close", False):
         r.mainloop()
@@ -564,17 +559,8 @@ def ask_tutorial_bot_cards(root):
     frame = ttk.Frame(dialog, padding=(18, 16, 18, 14))
     frame.pack(fill="both", expand=True)
 
-    ttk.Label(
-        frame,
-        text="Carte del bot",
-        font=("Segoe UI", 12, "bold")
-    ).pack(pady=(0, 10))
-
-    ttk.Label(
-        frame,
-        text="Vuoi vedere le carte del bot scoperte durante il tutorial?",
-        font=("Segoe UI", 9)
-    ).pack(pady=(0, 14))
+    ttk.Label(frame, text="Carte del bot", font=("Segoe UI", 12, "bold")).pack(pady=(0, 10))
+    ttk.Label(frame, text="Vuoi vedere le carte del bot scoperte?", font=("Segoe UI", 9)).pack(pady=(0, 14))
 
     buttons = ttk.Frame(frame)
     buttons.pack()
@@ -606,16 +592,8 @@ def show_tutorial_choice(root):
     ttk.Label(frame, text="TUTORIAL", font=("Segoe UI", 14, "bold")).pack(pady=(0, 14))
     ttk.Label(frame, text="Scegli che tipo di tutorial vuoi aprire.", font=("Segoe UI", 9)).pack(pady=(0, 18))
 
-    def textual():
-        dialog.destroy()
-        show_textual_tutorial(root)
-
-    def interactive():
-        dialog.destroy()
-        ask_tutorial_bot_cards(root)
-
-    ttk.Button(frame, text="Tutorial testuale", width=34, command=textual).pack(pady=5)
-    ttk.Button(frame, text="Tutorial interattivo", width=34, command=interactive).pack(pady=5)
+    ttk.Button(frame, text="Tutorial testuale", width=34, command=lambda: [dialog.destroy(), show_textual_tutorial(root)]).pack(pady=5)
+    ttk.Button(frame, text="Tutorial interattivo", width=34, command=lambda: [dialog.destroy(), ask_tutorial_bot_cards(root)]).pack(pady=5)
     ttk.Button(frame, text="Indietro", width=34, command=dialog.destroy).pack(pady=(16, 0))
 
     dialog.update_idletasks()

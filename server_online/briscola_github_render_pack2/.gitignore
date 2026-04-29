@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+venv/
+.venv/
+dist/
+build/
+*.spec
+briscola_stats.json
+briscola_settings.json

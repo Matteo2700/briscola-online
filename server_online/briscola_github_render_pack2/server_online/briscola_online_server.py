@@ -107,28 +107,15 @@ class Room:
     status: str = "In attesa dell'altro giocatore..."
     animations_enabled: bool = True
     animation_speed: str = "Normale"
-    match_target: int = 1
-    match_wins: dict[str, int] = field(default_factory=lambda: {"p1": 0, "p2": 0})
-    round_number: int = 1
-    disconnected: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def other(self, seat: str) -> str:
         return "p2" if seat == "p1" else "p1"
 
     def start(self) -> None:
-        self.match_wins = {"p1": 0, "p2": 0}
-        self.round_number = 1
-        self.disconnected = False
-        self.start_round()
-
-    def start_round(self) -> None:
         self.deck = make_deck()
         self.hands["p1"] = [self.deck.pop(0) for _ in range(3)]
         self.hands["p2"] = [self.deck.pop(0) for _ in range(3)]
-        self.points = {"p1": 0, "p2": 0}
-        self.tricks = {"p1": 0, "p2": 0}
-        self.played = {"p1": None, "p2": None}
         self.briscola_fisica = self.deck.pop()
         self.seme_briscola = self.briscola_fisica["seme"]
         self.turn = "p2"
@@ -136,8 +123,7 @@ class Room:
         self.started = True
         self.game_over = False
         self.resolving = False
-        self.disconnected = False
-        self.status = f"Partita {self.round_number} del match. Tocca al giocatore 2." if self.match_target > 1 else "Partita iniziata. Tocca al giocatore 2."
+        self.status = "Partita iniziata. Tocca al giocatore 2."
 
     def card_by_id(self, seat: str, card_id: str) -> dict[str, Any] | None:
         for card in self.hands[seat]:
@@ -233,41 +219,14 @@ class Room:
             self.resolving = False
 
             if not self.hands["p1"] and not self.hands["p2"]:
-                round_winner = None
+                self.game_over = True
+
                 if self.points["p1"] > self.points["p2"]:
-                    round_winner = "p1"
-                    self.match_wins["p1"] += 1
+                    self.status = "Partita finita: ha vinto il giocatore 1."
                 elif self.points["p2"] > self.points["p1"]:
-                    round_winner = "p2"
-                    self.match_wins["p2"] += 1
-
-                if self.match_target > 1:
-                    if round_winner:
-                        round_status = f"Partita {self.round_number} vinta da {self.players[round_winner].name}."
-                    else:
-                        round_status = f"Partita {self.round_number} finita in pareggio."
-
-                    if self.match_wins["p1"] >= self.match_target or self.match_wins["p2"] >= self.match_target:
-                        self.game_over = True
-                        winner = "p1" if self.match_wins["p1"] > self.match_wins["p2"] else "p2"
-                        self.status = f"Match finito: ha vinto {self.players[winner].name}."
-                    else:
-                        self.round_number += 1
-                        self.start_round()
-                        self.status = (
-                            f"{round_status} "
-                            f"Score match: {self.players['p1'].name} {self.match_wins['p1']} - "
-                            f"{self.players['p2'].name} {self.match_wins['p2']}. "
-                            f"Nuova partita: tocca a {self.players[self.turn].name}."
-                        )
+                    self.status = "Partita finita: ha vinto il giocatore 2."
                 else:
-                    self.game_over = True
-                    if self.points["p1"] > self.points["p2"]:
-                        self.status = "Partita finita: ha vinto il giocatore 1."
-                    elif self.points["p2"] > self.points["p1"]:
-                        self.status = "Partita finita: ha vinto il giocatore 2."
-                    else:
-                        self.status = "Partita finita: pareggio."
+                    self.status = "Partita finita: pareggio."
             else:
                 self.status += f" Tocca a {self.players[self.turn].name}."
 
@@ -299,14 +258,10 @@ class Room:
             "waiting": not self.started,
             "status": self.status,
             "game_over": self.game_over,
-            "disconnect": self.disconnected or ("disconnesso" in (self.status or "").lower()),
+            "disconnect": "disconnesso" in (self.status or "").lower(),
             "is_host": seat == "p1",
             "animations_enabled": self.animations_enabled,
             "animation_speed": self.animation_speed,
-            "match_target": self.match_target,
-            "match_score_you": self.match_wins.get(seat, 0),
-            "match_score_opponent": self.match_wins.get(other, 0),
-            "round_number": self.round_number,
         }
 
 
@@ -381,11 +336,7 @@ class BriscolaServer:
                 await self.send_error(client, "Esiste già una stanza con questo codice.")
                 return
 
-            match_target = int(msg.get("match_target") or 1)
-            if match_target not in [1, 2, 3]:
-                match_target = 1
-
-            room = Room(code=code, match_target=match_target)
+            room = Room(code=code)
             self.rooms[code] = room
 
             client.name = name
@@ -466,8 +417,7 @@ class BriscolaServer:
                 room.players.pop(client.seat, None)
 
             if room.players:
-                room.status = "L'avversario si è disconnesso. La partita online è stata interrotta."
-                room.disconnected = True
+                room.status = "L'avversario si è disconnesso."
                 room.game_over = True
             else:
                 self.rooms.pop(room.code, None)
