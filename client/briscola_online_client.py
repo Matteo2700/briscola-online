@@ -1,5 +1,6 @@
 
 import json
+import re
 import threading
 import websocket
 import tkinter as tk
@@ -90,6 +91,9 @@ class OnlineBriscolaClient:
         self.opponent_name = "Avversario"
         self.your_name = "Tu"
         self.pos = {}
+        self.animating = False
+        self.pending_state = None
+        self.suppress_next_own_animation_id = None
 
         self.canvas = tk.Canvas(root, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
@@ -187,7 +191,12 @@ class OnlineBriscolaClient:
                 pass
 
         url = self.normalize_server_url(server_url)
+        # timeout=10 serve solo per il tentativo iniziale di connessione.
+        # Dopo la connessione lo togliamo, altrimenti ws.recv() va in timeout
+        # dopo 10 secondi senza messaggi e il client mostra "Connessione chiusa".
         self.ws = websocket.create_connection(url, timeout=10)
+        self.ws.settimeout(None)
+
         self.connected = True
         self.game_over_shown = False
         threading.Thread(target=self.receiver_thread, daemon=True).start()
@@ -208,13 +217,14 @@ class OnlineBriscolaClient:
         main.pack(fill="both", expand=True)
 
         mode = tk.StringVar(value="create")
-        name_var = tk.StringVar(value="Giocatore")
+        name_var = tk.StringVar(value="")
         server_var = tk.StringVar(value="wss://briscola-online-wh5m.onrender.com/ws")
         room_var = tk.StringVar(value="")
 
         ttk.Label(main, text="Partita online", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
         ttk.Label(main, text="Nome").grid(row=1, column=0, sticky="w")
-        ttk.Entry(main, textvariable=name_var, width=26).grid(row=1, column=1, sticky="ew", pady=3)
+        name_entry = ttk.Entry(main, textvariable=name_var, width=26)
+        name_entry.grid(row=1, column=1, sticky="ew", pady=3)
         ttk.Label(main, text="Server URL").grid(row=2, column=0, sticky="w")
         ttk.Entry(main, textvariable=server_var, width=42).grid(row=2, column=1, sticky="ew", pady=3)
         ttk.Label(
@@ -228,24 +238,42 @@ class OnlineBriscolaClient:
         ttk.Radiobutton(lf, text="Crea nuova stanza", variable=mode, value="create").grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(lf, text="Entra in stanza", variable=mode, value="join").grid(row=1, column=0, sticky="w")
         ttk.Label(lf, text="Codice stanza").grid(row=2, column=0, sticky="w", pady=(8,0))
-        ttk.Entry(lf, textvariable=room_var, width=16).grid(row=2, column=1, sticky="w", padx=(8,0), pady=(8,0))
+        room_entry = ttk.Entry(lf, textvariable=room_var, width=16)
+        room_entry.grid(row=2, column=1, sticky="w", padx=(8,0), pady=(8,0))
 
         buttons = ttk.Frame(main)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12,0))
 
         def go():
+            nome = name_var.get().strip()
+
+            if not nome:
+                messagebox.showwarning("Nome richiesto", "Inserisci un nome prima di iniziare.")
+                name_entry.focus_set()
+                return
+
+            if mode.get() == "join" and not room_var.get().strip():
+                messagebox.showwarning("Codice stanza richiesto", "Inserisci il codice stanza.")
+                room_entry.focus_set()
+                return
+
             try:
                 self.connect(server_var.get().strip())
+
                 if mode.get() == "create":
-                    self.send({"type": "create", "name": name_var.get().strip()})
+                    self.send({"type": "create", "name": nome})
                 else:
-                    self.send({"type": "join", "name": name_var.get().strip(), "room": room_var.get().strip()})
+                    self.send({"type": "join", "name": nome, "room": room_var.get().strip()})
+
                 dialog.destroy()
+
             except Exception as e:
                 messagebox.showerror("Online", f"Connessione fallita:\n{e}")
 
         ttk.Button(buttons, text="Connetti", command=go).pack(side="right", padx=(8,0))
         ttk.Button(buttons, text="Annulla", command=dialog.destroy).pack(side="right")
+        name_entry.focus_set()
+
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_reqwidth() // 2)
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_reqheight() // 2)
@@ -260,41 +288,308 @@ class OnlineBriscolaClient:
         self.apply_state(msg)
 
     def set_status(self, text):
-        self.status = text
+        self.status = self.translate_server_status(text)
         self.render()
 
     def card(self, cid):
         return self.card_map.get(cid) if cid else None
 
-    def apply_state(self, st):
+    def set_state_from_server(self, st):
         self.room_code = st.get("room", "")
         self.seat = st.get("seat")
-        self.your_name = st.get("your_name", "Tu")
-        self.opponent_name = st.get("opponent_name", "Avversario")
+        self.your_name = (st.get("your_name") or "Tu").strip() or "Tu"
+        self.opponent_name = (st.get("opponent_name") or "Avversario").strip() or "Avversario"
+
         self.player = [self.card(cid) for cid in st.get("your_hand", []) if self.card(cid)]
         self.bot = [None] * int(st.get("opponent_count", 0))
+
         self.c_p = self.card(st.get("played_you"))
         self.c_b = self.card(st.get("played_opponent"))
+
         self.briscola_fisica = self.card(st.get("briscola_card"))
         self.seme_briscola = st.get("briscola_seme") or ""
+
         self.deck = DummyDeck(st.get("deck_count", 0))
+
         self.mani_p = int(st.get("your_tricks", 0))
         self.mani_b = int(st.get("opponent_tricks", 0))
         self.punti_p = int(st.get("your_points", 0))
         self.punti_b = int(st.get("opponent_points", 0))
+
         self.turn_player = bool(st.get("turn_is_you", False))
         self.lock = not self.turn_player
-        self.status = st.get("status", "")
+        self.status = self.translate_server_status(st.get("status", ""))
+
+        # Se il server ha confermato la carta giocata localmente,
+        # non serve più sopprimere l'animazione.
+        if self.c_p and self.suppress_next_own_animation_id == self.c_p.id:
+            self.suppress_next_own_animation_id = None
+
         self.render()
+
         if st.get("game_over") and not self.game_over_shown:
             self.game_over_shown = True
+
             if self.punti_p > self.punti_b:
                 res = "Hai vinto!"
             elif self.punti_p < self.punti_b:
                 res = "Hai perso!"
             else:
                 res = "Pareggio!"
-            messagebox.showinfo("Fine partita", f"{res}\n\nTu: {self.punti_p} | Avversario: {self.punti_b}")
+
+            messagebox.showinfo(
+                "Fine partita",
+                f"{res}\n\n"
+                f"{self.your_name}: {self.punti_p} | {self.opponent_name}: {self.punti_b}"
+            )
+
+    def translate_server_status(self, status):
+        status = status or ""
+
+        if not self.seat:
+            return status
+
+        if self.seat == "p1":
+            p1_name = self.your_name
+            p2_name = self.opponent_name
+        else:
+            p1_name = self.opponent_name
+            p2_name = self.your_name
+
+        # Prima gestisco le frasi complete, così non viene fuori
+        # "Tocca al Matteo", che fa venire voglia di spegnere il PC.
+        status = status.replace("Tocca al giocatore 1", f"Tocca a {p1_name}")
+        status = status.replace("Tocca al giocatore 2", f"Tocca a {p2_name}")
+        status = status.replace("tocca al giocatore 1", f"tocca a {p1_name}")
+        status = status.replace("tocca al giocatore 2", f"tocca a {p2_name}")
+
+        status = status.replace("Tocca a giocatore 1", f"Tocca a {p1_name}")
+        status = status.replace("Tocca a giocatore 2", f"Tocca a {p2_name}")
+        status = status.replace("tocca a giocatore 1", f"tocca a {p1_name}")
+        status = status.replace("tocca a giocatore 2", f"tocca a {p2_name}")
+
+        replacements = {
+            "giocatore 1": p1_name,
+            "Giocatore 1": p1_name,
+            "giocatore 2": p2_name,
+            "Giocatore 2": p2_name,
+        }
+
+        for old, new in replacements.items():
+            status = status.replace(old, new)
+
+        # Regola grafica: i punti si vedono SOLO nel riepilogo finale.
+        # Quindi nello status online tolgo frasi tipo "(+10)".
+        status = re.sub(r"\s*\(\+\d+\)", "", status)
+
+        return status
+
+    def apply_state(self, st):
+        if self.animating:
+            self.pending_state = st
+            return
+
+        new_c_p = self.card(st.get("played_you"))
+        new_c_b = self.card(st.get("played_opponent"))
+
+        old_c_p = self.c_p
+        old_c_b = self.c_b
+        old_mani_p = self.mani_p
+        old_mani_b = self.mani_b
+        old_player_ids = [c.id for c in self.player if c]
+        old_player_count = len(self.player)
+        old_bot_count = len(self.bot)
+
+        # 1) Risoluzione mano: prima faccio volare le carte vinte nel box mani vinte,
+        # poi applico lo stato nuovo arrivato dal server.
+        if old_c_p and old_c_b and not new_c_p and not new_c_b:
+            new_mani_p = int(st.get("your_tricks", 0))
+            new_mani_b = int(st.get("opponent_tricks", 0))
+
+            winner = None
+
+            if new_mani_p > old_mani_p:
+                winner = "player"
+                target = self.pos.get("player_pile")
+            elif new_mani_b > old_mani_b:
+                winner = "bot"
+                target = self.pos.get("bot_pile")
+            else:
+                target = None
+
+            if target:
+                src_p = self.pos.get("played_player")
+                src_b = self.pos.get("played_bot")
+
+                if src_p and src_b:
+                    self.animating = True
+                    self.animate_two_cards_to_target(
+                        old_c_p.img,
+                        src_p,
+                        old_c_b.img,
+                        src_b,
+                        target,
+                        lambda: self.finish_trick_animation_with_draws(
+                            st,
+                            winner,
+                            old_player_ids,
+                            old_player_count,
+                            old_bot_count
+                        )
+                    )
+                    return
+
+        # 2) Carta dell'avversario giocata: la faccio scendere dalla mano avversaria allo slot.
+        if not old_c_b and new_c_b:
+            src = self.pos.get("opponent_hand_source")
+            dst = self.pos.get("played_bot")
+
+            if src and dst:
+                self.animating = True
+                self.animate_card_move(
+                    new_c_b.img,
+                    src,
+                    dst,
+                    lambda: self.finish_animation_with_state(st)
+                )
+                return
+
+        # 3) Tua carta giocata da conferma server.
+        # Normalmente l'abbiamo già animata localmente in on_move;
+        # questa parte serve solo se arriva uno stato non previsto.
+        if not old_c_p and new_c_p and self.suppress_next_own_animation_id != new_c_p.id:
+            src = self.pos.get("player_hand_source")
+            dst = self.pos.get("played_player")
+
+            if src and dst:
+                self.animating = True
+                self.animate_card_move(
+                    new_c_p.img,
+                    src,
+                    dst,
+                    lambda: self.finish_animation_with_state(st)
+                )
+                return
+
+        self.set_state_from_server(st)
+
+    def finish_trick_animation_with_draws(self, st, winner, old_player_ids, old_player_count, old_bot_count):
+        """
+        Dopo l'animazione delle carte vinte, anima anche la pesca.
+        Poi applica lo stato definitivo ricevuto dal server.
+        """
+        # Svuoto visivamente gli slot centrali prima della pesca.
+        self.c_p = None
+        self.c_b = None
+        self.render()
+
+        new_player_ids = list(st.get("your_hand", []))
+        new_player_count = len(new_player_ids)
+        new_bot_count = int(st.get("opponent_count", 0))
+
+        player_drew = new_player_count > old_player_count
+        bot_drew = new_bot_count > old_bot_count
+
+        draw_jobs = []
+
+        added_player_ids = [cid for cid in new_player_ids if cid not in old_player_ids]
+        player_card = self.card(added_player_ids[0]) if added_player_ids else None
+
+        if player_drew:
+            draw_jobs.append(("player", player_card.img if player_card else self.back_img))
+
+        if bot_drew:
+            draw_jobs.append(("bot", self.back_img))
+
+        # Ordine corretto: chi ha vinto la mano pesca per primo.
+        if winner == "bot":
+            draw_jobs.sort(key=lambda item: 0 if item[0] == "bot" else 1)
+        else:
+            draw_jobs.sort(key=lambda item: 0 if item[0] == "player" else 1)
+
+        if not draw_jobs:
+            self.finish_animation_with_state(st)
+            return
+
+        self.animate_draw_sequence(
+            draw_jobs,
+            lambda: self.finish_animation_with_state(st)
+        )
+
+    def animate_draw_sequence(self, draw_jobs, callback):
+        if not draw_jobs:
+            callback()
+            return
+
+        owner, img = draw_jobs[0]
+
+        # In genere si pesca dal mazzo; se il mazzo è visivamente vuoto ma c'è
+        # ancora la briscola fisica, parto dalla posizione briscola.
+        src = self.pos.get("deck", (110, 260))
+
+        if owner == "player":
+            dst = self.pos.get("player_draw_target", (500, 470))
+        else:
+            dst = self.pos.get("opponent_draw_target", (500, 82))
+
+        def next_one():
+            self.animate_draw_sequence(draw_jobs[1:], callback)
+
+        self.animate_card_move(img, src, dst, next_one)
+
+    def finish_animation_with_state(self, st):
+        self.animating = False
+        self.canvas.delete("anim")
+        self.set_state_from_server(st)
+
+        if self.pending_state is not None:
+            next_state = self.pending_state
+            self.pending_state = None
+            self.root.after(50, lambda: self.apply_state(next_state))
+
+    def get_animation_steps(self):
+        return 14
+
+    def animate_card_move(self, img, src, dst, callback):
+        sx, sy = src
+        dx, dy = dst
+        steps = self.get_animation_steps()
+
+        anim_id = self.canvas.create_image(sx, sy, image=img, anchor="nw", tags="anim")
+
+        def step(i):
+            if i >= steps:
+                self.canvas.delete(anim_id)
+                callback()
+                return
+
+            self.canvas.move(anim_id, (dx - sx) / steps, (dy - sy) / steps)
+            self.root.after(18, lambda: step(i + 1))
+
+        step(0)
+
+    def animate_two_cards_to_target(self, img1, src1, img2, src2, dst, callback):
+        sx1, sy1 = src1
+        sx2, sy2 = src2
+        dx, dy = dst
+        steps = self.get_animation_steps()
+
+        a1 = self.canvas.create_image(sx1, sy1, image=img1, anchor="nw", tags="anim")
+        a2 = self.canvas.create_image(sx2, sy2, image=img2, anchor="nw", tags="anim")
+
+        def step(i):
+            if i >= steps:
+                self.canvas.delete(a1)
+                self.canvas.delete(a2)
+                callback()
+                return
+
+            self.canvas.move(a1, (dx - sx1) / steps, (dy - sy1) / steps)
+            self.canvas.move(a2, (dx - sx2) / steps, (dy - sy2) / steps)
+
+            self.root.after(18, lambda: step(i + 1))
+
+        step(0)
 
     def rounded_rect(self, x1, y1, x2, y2, r=24, **kwargs):
         points = [x1+r,y1,x2-r,y1,x2,y1,x2,y1+r,x2,y2-r,x2,y2,x2-r,y2,x1+r,y2,x1,y2,x1,y2-r,x1,y1+r,x1,y1]
@@ -340,7 +635,18 @@ class OnlineBriscolaClient:
         deck_y = played_y
         briscola_x = deck_x + CARD_W + 45
         briscola_y = deck_y
-        right_panel_x = w - 285
+        right_panel_x = w - 335
+
+        self.pos["deck"] = (deck_x, deck_y)
+        self.pos["briscola"] = (briscola_x, briscola_y)
+        self.pos["played_bot"] = (played_bot_x, played_y)
+        self.pos["played_player"] = (played_player_x, played_y)
+        self.pos["opponent_hand_source"] = (cx - CARD_W / 2, bot_y)
+        self.pos["player_hand_source"] = (cx - CARD_W / 2, player_y)
+        self.pos["opponent_draw_target"] = (cx - CARD_W / 2, bot_y)
+        self.pos["player_draw_target"] = (cx - CARD_W / 2, player_y)
+        self.pos["bot_pile"] = (right_panel_x + 198, 105 + 28)
+        self.pos["player_pile"] = (right_panel_x + 198, h - 165 + 28)
 
         center_x1 = played_bot_x - 24
         center_y1 = played_y - box_pad_y
@@ -364,15 +670,37 @@ class OnlineBriscolaClient:
             if self.seme_briscola:
                 self.draw_text(briscola_x+CARD_W/2, briscola_y+CARD_H+26, self.seme_briscola.upper(), size=11, color=GOLD, weight="bold")
 
-        self.draw_score_panel(right_panel_x, 105, self.opponent_name.upper()[:12], self.mani_b)
-        self.draw_score_panel(right_panel_x, h-165, "TU", self.mani_p)
+        self.draw_score_panel(right_panel_x, 105, self.opponent_name.upper(), self.mani_b)
+        self.draw_score_panel(right_panel_x, h-165, self.your_name.upper(), self.mani_p)
 
-        self.rounded_rect(75, h-86, 410, h-45, r=17, fill=BLACKISH, outline="#1ca956", width=2)
+        # Pannello stato online: larghezza proporzionata al testo,
+        # non una banda infinita sotto le carte.
         txt = "Online" + (f" | stanza {self.room_code}" if self.room_code else "")
-        self.draw_text(242, h-65, txt, size=11, color=GOLD, weight="bold")
+        status_txt = self.status or ""
 
-        self.rounded_rect(cx-320, h-122, cx+320, h-92, r=12, fill=BLACKISH, outline=TABLE_LIGHT, width=1)
-        self.canvas.create_text(cx, h-107, text=self.status, fill=MUTED, font=("Segoe UI", 9, "bold"), width=610)
+        approx_w = max(len(txt) * 9, len(status_txt) * 7) + 44
+        panel_w = max(250, min(520, approx_w))
+
+        self.rounded_rect(75, h-100, 75 + panel_w, h-45, r=17, fill=BLACKISH, outline="#1ca956", width=2)
+
+        self.canvas.create_text(
+            95,
+            h-83,
+            text=txt,
+            fill=GOLD,
+            font=("Segoe UI", 10, "bold"),
+            anchor="w"
+        )
+
+        self.canvas.create_text(
+            95,
+            h-62,
+            text=status_txt,
+            fill=MUTED,
+            font=("Segoe UI", 8, "bold"),
+            anchor="w",
+            width=panel_w - 35
+        )
 
         self.draw_empty_slot(played_bot_x, played_y, "AVV", active=False)
         self.draw_empty_slot(played_player_x, played_y, "TU", active=self.turn_player)
@@ -385,13 +713,60 @@ class OnlineBriscolaClient:
         self.draw_hand(self.player, cx, player_y, owner="player")
 
     def draw_score_panel(self, x, y, title, mani):
-        self.rounded_rect(x, y, x+205, y+105, r=22, fill=BLACKISH, outline=GOLD, width=2)
-        self.draw_text(x+102, y+28, title, size=15, color=GOLD, weight="bold")
+        panel_w = 250
+        panel_h = 112
+
+        title = str(title or "").strip() or "GIOCATORE"
+
+        # Font dinamico: niente troncamento brutale dei nomi lunghi.
+        if len(title) <= 10:
+            title_size = 15
+        elif len(title) <= 14:
+            title_size = 13
+        elif len(title) <= 18:
+            title_size = 11
+        else:
+            title_size = 10
+
+        self.rounded_rect(x, y, x + panel_w, y + panel_h, r=22, fill=BLACKISH, outline=GOLD, width=2)
+
+        self.canvas.create_text(
+            x + panel_w / 2,
+            y + 25,
+            text=title,
+            fill=GOLD,
+            font=("Segoe UI", title_size, "bold"),
+            anchor="center",
+            width=panel_w - 22
+        )
+
         if mani <= 0:
-            self.draw_text(x+102, y+70, "Mani vinte: 0", size=12, color=WHITE, weight="bold")
+            self.draw_text(
+                x + panel_w / 2,
+                y + 73,
+                "Mani vinte: 0",
+                size=12,
+                color=WHITE,
+                weight="bold"
+            )
             return
-        self.draw_text(x+75, y+68, f"Mani vinte: {mani}", size=12, color=WHITE, weight="bold")
-        self.canvas.create_image(x+156, y+28, image=self.back_small, anchor="nw")
+
+        self.draw_text(
+            x + 88,
+            y + 73,
+            f"Mani vinte: {mani}",
+            size=12,
+            color=WHITE,
+            weight="bold"
+        )
+
+        # Dorsino più a destra, dentro al pannello, senza coprire il nome.
+        self.canvas.create_image(
+            x + 195,
+            y + 34,
+            image=self.back_small,
+            anchor="nw"
+        )
 
     def draw_hand(self, cards, cx, y, owner):
         if not cards:
@@ -401,6 +776,8 @@ class OnlineBriscolaClient:
         start_x = cx - total_w / 2
         for i, c in enumerate(cards):
             x = start_x + i * (CARD_W + gap)
+            self.pos[f"{owner}_card_{i}"] = (x, y)
+
             if owner == "player":
                 tag = f"player_card_{i}"
                 outline = GOLD if self.turn_player and not self.c_p else TABLE_LIGHT
@@ -412,13 +789,43 @@ class OnlineBriscolaClient:
                 self.draw_card(x, y, self.back_img, outline=TABLE_LIGHT)
 
     def on_move(self, idx):
+        if self.animating:
+            return
+
         if not self.turn_player:
             return
+
         if idx < 0 or idx >= len(self.player):
             return
+
         card = self.player[idx]
+        src = self.pos.get(f"player_card_{idx}")
+        dst = self.pos.get("played_player")
+
         self.turn_player = False
-        self.send({"type": "play", "card_id": card.id})
+        self.lock = True
+        self.suppress_next_own_animation_id = card.id
+
+        def after_local_animation():
+            # Aggiornamento locale immediato: così la carta non sembra teletrasportata.
+            if card in self.player:
+                self.player.remove(card)
+
+            self.c_p = card
+            self.render()
+            self.send({"type": "play", "card_id": card.id})
+
+        if src and dst:
+            self.animating = True
+
+            def finish_local():
+                self.animating = False
+                self.canvas.delete("anim")
+                after_local_animation()
+
+            self.animate_card_move(card.img, src, dst, finish_local)
+        else:
+            after_local_animation()
 
 if __name__ == "__main__":
     root = tk.Tk()

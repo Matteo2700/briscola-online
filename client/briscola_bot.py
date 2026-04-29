@@ -211,6 +211,7 @@ class BriscolaGame:
         self.canvas.pack(fill="both", expand=True)
 
         self.pos = {}
+        self.animating_card_play = False
 
         self.setup_menu()
 
@@ -1150,6 +1151,8 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.pos["deck"] = (deck_x, deck_y)
         self.pos["bot_draw_target"] = (cx - CARD_W / 2, bot_y)
         self.pos["player_draw_target"] = (cx - CARD_W / 2, player_y)
+        self.pos["played_bot"] = (played_bot_x, played_y)
+        self.pos["played_player"] = (played_player_x, played_y)
         self.pos["bot_pile"] = (right_panel_x + 156, 105 + 28)
         self.pos["player_pile"] = (right_panel_x + 156, h - 165 + 28)
 
@@ -1446,6 +1449,7 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
 
         for i, c in enumerate(cards):
             x = start_x + i * (CARD_W + gap)
+            self.pos[f"{owner}_card_{i}"] = (x, y)
 
             if owner == "player":
                 tag = f"player_card_{i}"
@@ -1513,6 +1517,7 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.c_b = None
 
         self.lock = False
+        self.animating_card_play = False
         self.turn_player = True
         self.chi_inizia = "player"
 
@@ -1684,8 +1689,48 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
     # MOSSE
     # ========================================================
 
+    def animate_play_card(self, carta, src, dst, callback):
+        """
+        Animazione carta giocata: dalla mano allo slot centrale.
+        """
+        if carta is None:
+            callback()
+            return
+
+        if not self.animazioni_enabled.get():
+            self.root.after(120, callback)
+            return
+
+        sx, sy = src
+        dx, dy = dst
+
+        self.animating_card_play = True
+        anim_id = self.canvas.create_image(sx, sy, image=carta.img, anchor="nw", tags="anim_play")
+
+        if self.velocita_animazioni.get() == "Lenta":
+            steps = 18
+            step_delay = 24
+        elif self.velocita_animazioni.get() == "Veloce":
+            steps = 10
+            step_delay = 12
+        else:
+            steps = 14
+            step_delay = 18
+
+        def step(n):
+            if n >= steps:
+                self.canvas.delete(anim_id)
+                self.animating_card_play = False
+                callback()
+                return
+
+            self.canvas.move(anim_id, (dx - sx) / steps, (dy - sy) / steps)
+            self.root.after(step_delay, lambda: step(n + 1))
+
+        step(0)
+
     def on_move(self, i):
-        if self.lock:
+        if self.lock or self.animating_card_play:
             return
 
         if not self.turn_player:
@@ -1700,19 +1745,30 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         self.play_sound(self.snd_gioca)
         self.training_tip = ""
 
-        self.c_p = self.player.pop(i)
+        carta = self.player[i]
+        src = self.pos.get(f"player_card_{i}", self.pos.get("player_draw_target", (500, 470)))
+        dst = self.pos.get("played_player", src)
 
-        if self.c_b is None:
-            self.chi_inizia = "player"
-            self.turn_player = False
-            self.render()
-            self.after_delay(self.bot_move)
-        else:
-            self.render()
-            self.after_delay(self.resolve)
+        # Tolgo subito la carta dalla mano, così durante l'animazione non rimane duplicata.
+        self.player.pop(i)
+        self.turn_player = False
+        self.render()
+
+        def after_card_reaches_table():
+            self.c_p = carta
+
+            if self.c_b is None:
+                self.chi_inizia = "player"
+                self.render()
+                self.after_delay(self.bot_move)
+            else:
+                self.render()
+                self.after_delay(self.resolve)
+
+        self.animate_play_card(carta, src, dst, after_card_reaches_table)
 
     def bot_move(self):
-        if self.lock:
+        if self.lock or self.animating_card_play:
             return
 
         self.bot = [c for c in self.bot if c is not None]
@@ -1737,19 +1793,29 @@ Serve per controllare se il bot sta giocando bene o se sta facendo scelte discut
         if scelta is None:
             scelta = random.choice(self.bot)
 
+        idx = self.bot.index(scelta)
+        src = self.pos.get(f"bot_card_{idx}", self.pos.get("bot_draw_target", (500, 82)))
+        dst = self.pos.get("played_bot", src)
+
         self.bot_reason = self.explain_bot_choice(scelta)
 
-        self.c_b = scelta
-        self.bot.remove(self.c_b)
+        # Tolgo subito la carta dalla mano del bot, poi la animo verso il tavolo.
+        self.bot.remove(scelta)
 
         self.play_sound(self.snd_gioca)
+        self.render()
 
-        if self.c_p:
-            self.render()
-            self.after_delay(self.resolve)
-        else:
-            self.turn_player = True
-            self.render()
+        def after_card_reaches_table():
+            self.c_b = scelta
+
+            if self.c_p:
+                self.render()
+                self.after_delay(self.resolve)
+            else:
+                self.turn_player = True
+                self.render()
+
+        self.animate_play_card(scelta, src, dst, after_card_reaches_table)
 
     # ========================================================
     # LOGICA BOT

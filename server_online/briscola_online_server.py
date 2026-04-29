@@ -194,7 +194,7 @@ class Room:
             self.tricks[winner] += 1
 
             winner_name = self.players[winner].name
-            self.status = f"Mano vinta da {winner_name} (+{points})."
+            self.status = f"Mano vinta da {winner_name}."
 
             self.played = {"p1": None, "p2": None}
             self.chi_inizia = None
