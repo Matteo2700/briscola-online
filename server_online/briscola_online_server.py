@@ -66,7 +66,7 @@ def winner_of_trick(
     return first_seat
 
 
-@dataclass
+@dataclass(eq=False)
 class Client:
     websocket: WebSocket
     name: str = "Giocatore"
