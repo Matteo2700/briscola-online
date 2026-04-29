@@ -241,11 +241,6 @@ class OnlineBriscolaClient:
         room_entry = ttk.Entry(lf, textvariable=room_var, width=20)
         room_entry.grid(row=2, column=1, sticky="w", padx=(8,0), pady=(8,0))
 
-        ttk.Label(
-            lf,
-            text="Se crei: vuoto = automatico",
-            font=("Segoe UI", 8)
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         buttons = ttk.Frame(main)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12,0))
@@ -338,6 +333,12 @@ class OnlineBriscolaClient:
         self.render()
 
         if st.get("game_over") and not self.game_over_shown:
+            # Se la partita è finita perché uno si è disconnesso, non è un pareggio
+            # e non va mostrato il riepilogo punti.
+            if st.get("disconnect"):
+                self.game_over_shown = True
+                return
+
             self.game_over_shown = True
 
             if self.punti_p > self.punti_b:
@@ -647,6 +648,13 @@ class OnlineBriscolaClient:
         briscola_y = deck_y
         right_panel_x = w - 335
 
+        # Box laterali simmetrici rispetto al bordo del tavolo.
+        # Tavolo: y=24 fino a h-24. Altezza box: 112.
+        score_panel_h = 112
+        score_panel_margin_y = 36
+        score_top_y = 24 + score_panel_margin_y
+        score_bottom_y = h - 24 - score_panel_margin_y - score_panel_h
+
         self.pos["deck"] = (deck_x, deck_y)
         self.pos["briscola"] = (briscola_x, briscola_y)
         self.pos["played_bot"] = (played_bot_x, played_y)
@@ -655,8 +663,8 @@ class OnlineBriscolaClient:
         self.pos["player_hand_source"] = (cx - CARD_W / 2, player_y)
         self.pos["opponent_draw_target"] = (cx - CARD_W / 2, bot_y)
         self.pos["player_draw_target"] = (cx - CARD_W / 2, player_y)
-        self.pos["bot_pile"] = (right_panel_x + 198, 105 + 28)
-        self.pos["player_pile"] = (right_panel_x + 198, h - 165 + 28)
+        self.pos["bot_pile"] = (right_panel_x + 198, score_top_y + 28)
+        self.pos["player_pile"] = (right_panel_x + 198, score_bottom_y + 28)
 
         center_x1 = played_bot_x - 24
         center_y1 = played_y - box_pad_y
@@ -680,8 +688,8 @@ class OnlineBriscolaClient:
             if self.seme_briscola:
                 self.draw_text(briscola_x+CARD_W/2, briscola_y+CARD_H+26, self.seme_briscola.upper(), size=11, color=GOLD, weight="bold")
 
-        self.draw_score_panel(right_panel_x, 105, self.opponent_name.upper(), self.mani_b)
-        self.draw_score_panel(right_panel_x, h-165, self.your_name.upper(), self.mani_p)
+        self.draw_score_panel(right_panel_x, score_top_y, self.opponent_name.upper(), self.mani_b)
+        self.draw_score_panel(right_panel_x, score_bottom_y, self.your_name.upper(), self.mani_p)
 
         # Pannello stato online: larghezza proporzionata al testo,
         # non una banda infinita sotto le carte.

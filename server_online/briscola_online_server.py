@@ -116,12 +116,12 @@ class Room:
         self.hands["p2"] = [self.deck.pop(0) for _ in range(3)]
         self.briscola_fisica = self.deck.pop()
         self.seme_briscola = self.briscola_fisica["seme"]
-        self.turn = "p1"
+        self.turn = "p2"
         self.chi_inizia = None
         self.started = True
         self.game_over = False
         self.resolving = False
-        self.status = "Tocca al giocatore 1."
+        self.status = "Partita iniziata. Tocca al giocatore 2."
 
     def card_by_id(self, seat: str, card_id: str) -> dict[str, Any] | None:
         for card in self.hands[seat]:
@@ -256,6 +256,7 @@ class Room:
             "waiting": not self.started,
             "status": self.status,
             "game_over": self.game_over,
+            "disconnect": "disconnesso" in (self.status or "").lower(),
         }
 
 
@@ -446,6 +447,11 @@ async def root() -> dict[str, str]:
         "name": "Briscola online server",
         "websocket": "/ws",
     }
+
+
+@app.head("/")
+async def root_head():
+    return None
 
 
 @app.get("/health")
