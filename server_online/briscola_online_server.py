@@ -111,6 +111,9 @@ class Room:
     match_wins: dict[str, int] = field(default_factory=lambda: {"p1": 0, "p2": 0})
     round_number: int = 1
     disconnected: bool = False
+    rematch_votes: set[str] = field(default_factory=set)
+    last_chat: dict[str, Any] | None = None
+    chat_seq: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def other(self, seat: str) -> str:
@@ -120,6 +123,8 @@ class Room:
         self.match_wins = {"p1": 0, "p2": 0}
         self.round_number = 1
         self.disconnected = False
+        self.rematch_votes.clear()
+        self.last_chat = None
         self.start_round()
 
     def start_round(self) -> None:
@@ -307,6 +312,9 @@ class Room:
             "match_score_you": self.match_wins.get(seat, 0),
             "match_score_opponent": self.match_wins.get(other, 0),
             "round_number": self.round_number,
+            "rematch_you": seat in self.rematch_votes,
+            "rematch_opponent": other in self.rematch_votes,
+            "last_chat": self.last_chat,
         }
 
 
@@ -385,7 +393,16 @@ class BriscolaServer:
             if match_target not in [1, 2, 3]:
                 match_target = 1
 
-            room = Room(code=code, match_target=match_target)
+            speed = str(msg.get("animation_speed") or "Normale")
+            if speed not in ["Lenta", "Normale", "Veloce"]:
+                speed = "Normale"
+
+            room = Room(
+                code=code,
+                match_target=match_target,
+                animations_enabled=bool(msg.get("animations_enabled", True)),
+                animation_speed=speed,
+            )
             self.rooms[code] = room
 
             client.name = name
@@ -501,6 +518,69 @@ class BriscolaServer:
 
         await self.broadcast(room)
 
+    async def handle_rematch(self, client: Client) -> None:
+        room = self.rooms.get(client.room_code or "")
+
+        if not room:
+            await self.send_error(client, "Partita non trovata.")
+            return
+
+        async with room.lock:
+            if room.disconnected:
+                await self.send_error(client, "Non è possibile fare rivincita: l'avversario si è disconnesso.")
+                return
+
+            if not room.game_over:
+                await self.send_error(client, "La rivincita si può chiedere solo a partita finita.")
+                return
+
+            if client.seat not in ["p1", "p2"]:
+                await self.send_error(client, "Giocatore non valido.")
+                return
+
+            room.rematch_votes.add(client.seat)
+            other = room.other(client.seat)
+
+            if other in room.players and other in room.rematch_votes:
+                room.start()
+                room.status = "Rivincita accettata. Nuova partita iniziata."
+            else:
+                room.status = f"{client.name} vuole la rivincita."
+
+        await self.broadcast(room)
+
+    async def handle_chat(self, client: Client, msg: dict[str, Any]) -> None:
+        room = self.rooms.get(client.room_code or "")
+
+        if not room:
+            await self.send_error(client, "Partita non trovata.")
+            return
+
+        text = str(msg.get("message") or "")
+        text = re.sub(r"[\r\n\t]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        if not text:
+            await self.send_error(client, "Messaggio vuoto.")
+            return
+
+        if len(text) > 160:
+            text = text[:160]
+
+        async with room.lock:
+            room.chat_seq += 1
+            room.last_chat = {
+                "id": room.chat_seq,
+                "from": client.seat,
+                "name": client.name,
+                "text": text,
+            }
+
+            # Il messaggio resta anche nello status, così si vede subito.
+            room.status = f"{client.name}: {text}"
+
+        await self.broadcast(room)
+
     async def handle_message(self, client: Client, msg: dict[str, Any]) -> None:
         typ = msg.get("type")
 
@@ -512,6 +592,10 @@ class BriscolaServer:
             await self.handle_play(client, msg)
         elif typ == "settings":
             await self.handle_settings(client, msg)
+        elif typ == "rematch":
+            await self.handle_rematch(client)
+        elif typ == "chat":
+            await self.handle_chat(client, msg)
         elif typ == "ping":
             await client.send({"type": "pong"})
         else:

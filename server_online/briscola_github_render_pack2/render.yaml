@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: briscola-online-server
-    runtime: python
-    rootDir: server_online
-    buildCommand: pip install -r requirements.txt
-    startCommand: python briscola_online_server.py
