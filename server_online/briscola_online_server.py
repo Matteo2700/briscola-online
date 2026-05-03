@@ -113,6 +113,7 @@ class Room:
     disconnected: bool = False
     rematch_votes: set[str] = field(default_factory=set)
     last_chat: dict[str, Any] | None = None
+    last_trick: dict[str, Any] | None = None
     chat_seq: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -134,6 +135,7 @@ class Room:
         self.points = {"p1": 0, "p2": 0}
         self.tricks = {"p1": 0, "p2": 0}
         self.played = {"p1": None, "p2": None}
+        self.last_trick = None
         self.briscola_fisica = self.deck.pop()
         self.seme_briscola = self.briscola_fisica["seme"]
         self.turn = "p2"
@@ -214,6 +216,13 @@ class Room:
             points = self.played["p1"]["punti"] + self.played["p2"]["punti"]
             self.points[winner] += points
             self.tricks[winner] += 1
+
+            self.last_trick = {
+                "p1": self.played["p1"]["id"],
+                "p2": self.played["p2"]["id"],
+                "winner": winner,
+                "points": points,
+            }
 
             winner_name = self.players[winner].name
             self.status = f"Mano vinta da {winner_name}."
@@ -314,6 +323,16 @@ class Room:
             "round_number": self.round_number,
             "rematch_you": seat in self.rematch_votes,
             "rematch_opponent": other in self.rematch_votes,
+            "last_trick": (
+                None
+                if not self.last_trick
+                else {
+                    "you": self.last_trick.get(seat),
+                    "opponent": self.last_trick.get(other),
+                    "winner": "you" if self.last_trick.get("winner") == seat else "opponent",
+                    "points": self.last_trick.get("points", 0),
+                }
+            ),
             "last_chat": self.last_chat,
         }
 
@@ -576,8 +595,9 @@ class BriscolaServer:
                 "text": text,
             }
 
-            # Il messaggio resta anche nello status, così si vede subito.
-            room.status = f"{client.name}: {text}"
+            # Il messaggio resta solo nel canale chat.
+            # Non aggiorniamo room.status, così il pannello stato in basso
+            # continua a mostrare solo informazioni di partita/connessione.
 
         await self.broadcast(room)
 
