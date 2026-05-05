@@ -106,6 +106,9 @@ class Room:
     game_over: bool = False
     status: str = "In attesa dell'altro giocatore..."
     animations_enabled: bool = True
+    anim_gioca_enabled: bool = True
+    anim_pesca_enabled: bool = True
+    anim_raccogli_enabled: bool = True
     animation_speed: str = "Normale"
     match_target: int = 1
     match_wins: dict[str, int] = field(default_factory=lambda: {"p1": 0, "p2": 0})
@@ -307,6 +310,9 @@ class Room:
             "disconnect": self.disconnected or ("disconnesso" in (self.status or "").lower()),
             "is_host": seat == "p1",
             "animations_enabled": self.animations_enabled,
+            "anim_gioca_enabled": self.anim_gioca_enabled,
+            "anim_pesca_enabled": self.anim_pesca_enabled,
+            "anim_raccogli_enabled": self.anim_raccogli_enabled,
             "animation_speed": self.animation_speed,
             "match_target": self.match_target,
             "match_score_you": self.match_wins.get(seat, 0),
@@ -393,15 +399,15 @@ class BriscolaServer:
             if match_target not in [1, 2, 3]:
                 match_target = 1
 
-            speed = str(msg.get("animation_speed") or "Normale")
-            if speed not in ["Lenta", "Normale", "Veloce"]:
-                speed = "Normale"
 
             room = Room(
                 code=code,
                 match_target=match_target,
                 animations_enabled=bool(msg.get("animations_enabled", True)),
-                animation_speed=speed,
+                anim_gioca_enabled=bool(msg.get("anim_gioca_enabled", True)),
+                anim_pesca_enabled=bool(msg.get("anim_pesca_enabled", True)),
+                anim_raccogli_enabled=bool(msg.get("anim_raccogli_enabled", True)),
+                animation_speed="Normale",
             )
             self.rooms[code] = room
 
@@ -506,15 +512,17 @@ class BriscolaServer:
             return
 
         enabled = bool(msg.get("animations_enabled", True))
-        speed = str(msg.get("animation_speed") or "Normale")
-
-        if speed not in ["Lenta", "Normale", "Veloce"]:
-            speed = "Normale"
+        anim_gioca = bool(msg.get("anim_gioca_enabled", True))
+        anim_pesca = bool(msg.get("anim_pesca_enabled", True))
+        anim_raccogli = bool(msg.get("anim_raccogli_enabled", True))
 
         async with room.lock:
             room.animations_enabled = enabled
-            room.animation_speed = speed
-            room.status = f"Animazioni: {'ON' if enabled else 'OFF'} - {speed}."
+            room.anim_gioca_enabled = anim_gioca
+            room.anim_pesca_enabled = anim_pesca
+            room.anim_raccogli_enabled = anim_raccogli
+            room.animation_speed = "Normale"
+            room.status = f"Animazioni: {'ON' if enabled else 'OFF'}."
 
         await self.broadcast(room)
 
